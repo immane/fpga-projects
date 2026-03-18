@@ -1,0 +1,14 @@
+# Generated build and implementation outputs
+impl/
+
+# User-specific project settings
+*.gprj.user
+
+# Common editor and OS artifacts
+.vscode/
+.idea/
+*.log
+*.tmp
+*.bak
+Thumbs.db
+Desktop.ini

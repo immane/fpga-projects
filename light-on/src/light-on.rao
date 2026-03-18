@@ -1,0 +1,40 @@
+<?xml version="1" encoding="UTF-8"?>
+<GAO_CONFIG>
+    <Version>3.0</Version>
+    <Mode>Lite</Mode>
+    <AoCore_Lite index="0" sample_clock="Clock" trig_type="0" capture_amount="1024" implemention="0" input_register_enabled="0" capture_init_data_enabled="0" module_name="led">
+        <SignalList>
+            <Bus capture_enable="true" name="count_value_reg[23:0]">
+                <Signal>count_value_reg[23]</Signal>
+                <Signal>count_value_reg[22]</Signal>
+                <Signal>count_value_reg[21]</Signal>
+                <Signal>count_value_reg[20]</Signal>
+                <Signal>count_value_reg[19]</Signal>
+                <Signal>count_value_reg[18]</Signal>
+                <Signal>count_value_reg[17]</Signal>
+                <Signal>count_value_reg[16]</Signal>
+                <Signal>count_value_reg[15]</Signal>
+                <Signal>count_value_reg[14]</Signal>
+                <Signal>count_value_reg[13]</Signal>
+                <Signal>count_value_reg[12]</Signal>
+                <Signal>count_value_reg[11]</Signal>
+                <Signal>count_value_reg[10]</Signal>
+                <Signal>count_value_reg[9]</Signal>
+                <Signal>count_value_reg[8]</Signal>
+                <Signal>count_value_reg[7]</Signal>
+                <Signal>count_value_reg[6]</Signal>
+                <Signal>count_value_reg[5]</Signal>
+                <Signal>count_value_reg[4]</Signal>
+                <Signal>count_value_reg[3]</Signal>
+                <Signal>count_value_reg[2]</Signal>
+                <Signal>count_value_reg[1]</Signal>
+                <Signal>count_value_reg[0]</Signal>
+            </Bus>
+            <Signal capture_enable="true">Clock</Signal>
+            <Signal capture_enable="true">IO_voltage</Signal>
+            <Signal capture_enable="true">count_value_flag</Signal>
+            <Signal capture_enable="true">IO_voltage_reg</Signal>
+        </SignalList>
+    </AoCore_Lite>
+    <GAO_ID>0111111001101110</GAO_ID>
+</GAO_CONFIG>
