@@ -6,6 +6,7 @@ module led #(
 )(
     input clk,
     input rst_n,
+    input key_i,
     output [5:0] led
 );
 
@@ -13,7 +14,33 @@ module led #(
 // Initial values for registers
 initial begin
     led_r = 6'b0;
+    brightness = BRIGHTNESS;
 end
+
+
+reg [7:0] brightness;
+wire [1:0] key_state;
+key_ctrl key_ctrl_inst (
+    .clk       (clk),
+    .rst_n     (rst_n),
+    .key_i     (key_i),
+    .key_state (key_state)
+);
+always @(posedge clk or negedge rst_n) begin
+    if(!rst_n) begin
+        brightness <= BRIGHTNESS; // Reset brightness to default
+    end
+    else begin
+        case (key_state)
+            2'b00: 
+                brightness <= 2'b1;
+            default: 
+                // Update brightness based on key state (simple mapping for demonstration)
+                brightness <= {key_state, key_state, key_state, key_state};
+        endcase
+    end
+end
+
 
 // Instantiate the second counter to keep track of seconds
 wire [5:0] bin_sec;
@@ -30,7 +57,7 @@ wire pwm_signal;
 pwm_gen pwm(
     .clk    (clk),
     .rst_n  (rst_n),
-    .duty   (BRIGHTNESS),
+    .duty   (brightness),
     .pwm_o  (pwm_signal)
 );
 
