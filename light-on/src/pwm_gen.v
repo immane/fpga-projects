@@ -2,7 +2,7 @@ module pwm_gen#(
 	parameter DFLT_DUTY = 8'h7F  // Default duty cycle (50%)
 )(
 	input clk,
-	inout rst_n,
+	input rst_n,
 	input [7:0] duty,  // Duty cycle (0-255)
 	output reg pwm_o
 );

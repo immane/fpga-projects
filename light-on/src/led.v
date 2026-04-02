@@ -17,17 +17,19 @@ initial begin
     brightness = BRIGHTNESS;
 end
 
+localparam LED_COUNT = 6; // Number of LEDs
+
 
 reg [7:0] brightness;
 wire [1:0] key_state;
 key_ctrl key_ctrl_inst (
     .clk       (clk),
-    .rst_n     (rst_n),
+    .rst_n     (rst_n_key),
     .key_i     (key_i),
     .key_state (key_state)
 );
-always @(posedge clk or negedge rst_n) begin
-    if(!rst_n) begin
+always @(posedge clk or negedge rst_n_key) begin
+    if(!rst_n_key) begin
         brightness <= BRIGHTNESS; // Reset brightness to default
     end
     else begin
@@ -49,6 +51,7 @@ sec_cnt #(
     .A_MINUTE_SEC    (A_MINUTE_SEC)
 ) sec_cnt_inst(
     .clk     (clk),
+    .rst_n   (rst_n_key),
     .bin_sec (bin_sec)
 );
 
@@ -56,20 +59,29 @@ sec_cnt #(
 wire pwm_signal;
 pwm_gen pwm(
     .clk    (clk),
-    .rst_n  (rst_n),
+    .rst_n  (rst_n_key),
     .duty   (brightness),
     .pwm_o  (pwm_signal)
 );
 
 integer i;
 reg[5:0] led_r;
-always @(posedge clk) begin
-    for(i = 0; i < 6; i = i + 1) begin
-        led_r[i] <= bin_sec[i] && pwm_signal;
+always @(posedge clk or negedge rst_n_key) begin
+    if(!rst_n_key) begin
+        led_r <= 6'b0;
+    end
+    else begin
+        for(i = 0; i < LED_COUNT; i = i + 1) begin
+            led_r[i] <= bin_sec[i] && pwm_signal;
+        end
     end
 end
 
 // Output the LED states (active low)
 assign led = ~led_r;
+
+// Generate a reset signal for the key controller and other modules
+wire rst_n_key;
+assign rst_n_key = ~rst_n;
 
 endmodule

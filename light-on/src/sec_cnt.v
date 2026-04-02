@@ -3,6 +3,7 @@ module sec_cnt #(
     parameter A_MINUTE_SEC = 6'd60
 )(
     input clk,
+    input rst_n,
     output reg [5:0] bin_sec
 );
 
@@ -18,16 +19,22 @@ initial begin
 end
 
 // Counter for generating 1-second tick
-always @(posedge clk) begin
-    if (cnt_1s < CLOCK_FREQUENCY - 1)
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n)
+        cnt_1s <= 25'b0;
+        
+    else if (cnt_1s < CLOCK_FREQUENCY - 1)
         cnt_1s <= cnt_1s + 1'b1;
     else
         cnt_1s <= 25'b0;
 end
 
 // Counter for seconds, resets after reaching A_MINUTE_SEC
-always @(posedge clk) begin
-    if (t1s) begin
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n)
+        bin_sec <= 6'b0;
+
+    else if (t1s) begin
         if (bin_sec < A_MINUTE_SEC - 6'd1)
             bin_sec <= bin_sec + 6'd1;
         else
