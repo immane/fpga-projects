@@ -14,6 +14,7 @@ module main(
 localparam CLOCK_FREQUENCY = 27_000_000; // 27 MHz input
 localparam HDMI_FREQ = 74_250_000; // 74.25 MHz for HDMI
 localparam HDMI_FREQ_5X = 371_250_000; // 5x HDMI frequency for PLL
+localparam integer TMDS_ALIGN_LATENCY = 1; // 1-cycle align for registered pattern_gen output
 
 
 // Initial values for registers
@@ -22,6 +23,7 @@ localparam HDMI_FREQ_5X = 371_250_000; // 5x HDMI frequency for PLL
 wire lock;
 wire clk_hdmi;
 wire clk_hdmi_5x;
+wire hdmi_rst_n;
 
 reg [31:0] htmi_cnt;
 
@@ -29,6 +31,14 @@ reg [31:0] htmi_cnt;
 wire hsync, vsync, de;
 wire [11:0] x, y;
 wire frame_end;
+reg [TMDS_ALIGN_LATENCY-1:0] de_pipe;
+reg [TMDS_ALIGN_LATENCY-1:0] hsync_pipe;
+reg [TMDS_ALIGN_LATENCY-1:0] vsync_pipe;
+integer i;
+
+wire de_tmds;
+wire hsync_tmds;
+wire vsync_tmds;
 
 // RGB output from pattern generator
 wire [23:0] rgb;
@@ -40,9 +50,14 @@ wire serial_r;
 wire serial_g;
 wire serial_b;
 
+assign hdmi_rst_n = rst_n & lock;
+assign de_tmds = de_pipe[TMDS_ALIGN_LATENCY-1];
+assign hsync_tmds = hsync_pipe[TMDS_ALIGN_LATENCY-1];
+assign vsync_tmds = vsync_pipe[TMDS_ALIGN_LATENCY-1];
+
 // Counter to generate a 1-second tick based on HDMI frequency
-always @(posedge clk_hdmi or negedge rst_n) begin
-    if (!rst_n) htmi_cnt <= 32'd0;
+always @(posedge clk_hdmi or negedge hdmi_rst_n) begin
+    if (!hdmi_rst_n) htmi_cnt <= 32'd0;
     else begin
         if(htmi_cnt == HDMI_FREQ) htmi_cnt <= 32'd0; // Reset counter after reaching HDMI frequency
         else htmi_cnt <= htmi_cnt + 1;
@@ -50,8 +65,8 @@ always @(posedge clk_hdmi or negedge rst_n) begin
 end
 
 // Toggle LED every second based on HDMI frequency
-always @(posedge clk_hdmi or negedge rst_n) begin
-    if (!rst_n) led <= 1'b0;
+always @(posedge clk_hdmi or negedge hdmi_rst_n) begin
+    if (!hdmi_rst_n) led <= 1'b0;
     else if(htmi_cnt == HDMI_FREQ) led <= ~led; // Toggle LED every second
     else led <= led; // Keep LED state unchanged 
 end
@@ -66,13 +81,13 @@ Gowin_rPLL pll_hdmi(
 Gowin_CLKDIV clkdiv_hdmi(
     .clkout(clk_hdmi), //output clkout
     .hclkin(clk_hdmi_5x), //input hclkin
-    .resetn(rst_n) //input resetn
+    .resetn(hdmi_rst_n) //input resetn
 );
 
 // 2: Instantiate video timing generator
 vid_timing_gen vid_timing(
     .clk_hdmi(clk_hdmi),
-    .rst_n(rst_n),
+    .rst_n(hdmi_rst_n),
     .hsync(hsync),
     .vsync(vsync),
     .de(de),
@@ -84,7 +99,7 @@ vid_timing_gen vid_timing(
 // 3: Instantiate pattern generator and TMDS encoders
 pattern_gen test_pattern(
     .clk_hdmi(clk_hdmi),
-    .rst_n(rst_n),
+    .rst_n(hdmi_rst_n),
     .de(de),
     .x(x),
     .y(y),
@@ -92,29 +107,47 @@ pattern_gen test_pattern(
     .rgb_o(rgb) // Connect to TMDS encoder later
 );
 
+// Unified control-signal alignment pipeline for TMDS.
+always @(posedge clk_hdmi or negedge hdmi_rst_n) begin
+    if (!hdmi_rst_n) begin
+        de_pipe <= {TMDS_ALIGN_LATENCY{1'b0}};
+        hsync_pipe <= {TMDS_ALIGN_LATENCY{1'b0}};
+        vsync_pipe <= {TMDS_ALIGN_LATENCY{1'b0}};
+    end else begin
+        de_pipe[0] <= de;
+        hsync_pipe[0] <= hsync;
+        vsync_pipe[0] <= vsync;
+        for (i = 1; i < TMDS_ALIGN_LATENCY; i = i + 1) begin
+            de_pipe[i] <= de_pipe[i-1];
+            hsync_pipe[i] <= hsync_pipe[i-1];
+            vsync_pipe[i] <= vsync_pipe[i-1];
+        end
+    end
+end
+
 // 4: Instantiate TMDS encoders for RGB channels
 tmds_encoder tmds_encoder_r(
     .clk_hdmi(clk_hdmi),
-    .rst_n(rst_n),
-    .de(de),
+    .rst_n(hdmi_rst_n),
+    .de(de_tmds),
     .data_i(rgb[23:16]),
     .ctrl_i(2'b00),
     .tmds_o(tmds_r)
 );
 tmds_encoder tmds_encoder_g(
     .clk_hdmi(clk_hdmi),
-    .rst_n(rst_n),
-    .de(de),
+    .rst_n(hdmi_rst_n),
+    .de(de_tmds),
     .data_i(rgb[15:8]),
     .ctrl_i(2'b00),
     .tmds_o(tmds_g)
 );
 tmds_encoder tmds_encoder_b(
     .clk_hdmi(clk_hdmi),
-    .rst_n(rst_n),
-    .de(de),
+    .rst_n(hdmi_rst_n),
+    .de(de_tmds),
     .data_i(rgb[7:0]),
-    .ctrl_i({vsync, hsync}),
+    .ctrl_i({vsync_tmds, hsync_tmds}),
     .tmds_o(tmds_b)
 );
 
@@ -122,28 +155,28 @@ tmds_encoder tmds_encoder_b(
 serlizer_10to1 u_ser_clk (
     .clk_hdmi    (clk_hdmi),
     .clk_hdmi_5x (clk_hdmi_5x),
-    .rst_n       (rst_n & lock),
+    .rst_n       (hdmi_rst_n),
     .parallel_i  (10'b0000011111),   // Control code for clock channel
     .serial_o    (serial_clk)
 );
 serlizer_10to1 u_ser_r (
     .clk_hdmi    (clk_hdmi),
     .clk_hdmi_5x (clk_hdmi_5x),
-    .rst_n       (rst_n & lock),
+    .rst_n       (hdmi_rst_n),
     .parallel_i  (tmds_r),
     .serial_o    (serial_r)
 );
 serlizer_10to1 u_ser_g (
     .clk_hdmi    (clk_hdmi),
     .clk_hdmi_5x (clk_hdmi_5x),
-    .rst_n       (rst_n & lock),
+    .rst_n       (hdmi_rst_n),
     .parallel_i  (tmds_g),
     .serial_o    (serial_g)
 );
 serlizer_10to1 u_ser_b (
     .clk_hdmi    (clk_hdmi),
     .clk_hdmi_5x (clk_hdmi_5x),
-    .rst_n       (rst_n & lock),
+    .rst_n       (hdmi_rst_n),
     .parallel_i  (tmds_b),
     .serial_o    (serial_b)
 );

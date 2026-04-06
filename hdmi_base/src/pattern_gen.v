@@ -13,6 +13,8 @@ module pattern_gen # (
     output reg [23:0] rgb_o
 );
 
+localparam integer BAND_H = V_ACTIVE / 9;
+
 // Generate a simple color pattern based on the pixel position and frame count
 reg [23:0] frame_cnt;
 always @(posedge clk_hdmi or negedge rst_n) begin
@@ -22,25 +24,32 @@ always @(posedge clk_hdmi or negedge rst_n) begin
         frame_cnt <= frame_cnt + 24'd1;
 end
 
-// Update RGB output based on the current pixel position and frame count
+// Update RGB output: 9 horizontal bands (top->bottom):
+// red, orange, yellow, green, cyan, blue, purple, black, white.
 always @(posedge clk_hdmi or negedge rst_n) begin
     if (!rst_n)
         rgb_o <= 24'h000000;
     else if (!de)
         rgb_o <= 24'h000000;
     else begin
-        // Create a simple color pattern that changes every frame and varies across the screen
-        // One example: Use the upper bits of x to create vertical color bands, and frame count to animate
-        // Test for 720p: 1280x720, so x[9:7] gives us 8 vertical bands (1280/8 = 160 pixels per band)
-        case (x[9:7])
-            3'b000: rgb_o <= 24'hFF0000 ^ {frame_cnt[7:0], 16'h0000};
-            3'b001: rgb_o <= 24'h00FF00 ^ {8'h00, frame_cnt[7:0], 8'h00};
-            3'b010: rgb_o <= 24'h0000FF ^ {16'h0000, frame_cnt[7:0]};
-            3'b011: rgb_o <= 24'h00FFFF ^ {frame_cnt[7:0], 8'h00, 8'h00};
-            3'b100: rgb_o <= 24'hFF00FF ^ {8'h00, frame_cnt[7:0], 8'h00};
-            3'b101: rgb_o <= 24'hFFFF00 ^ {16'h0000, frame_cnt[7:0]};
-            default: rgb_o <= {x[7:0], y[7:0], frame_cnt[7:0]};
-        endcase
+        if (y < BAND_H * 1)
+            rgb_o <= 24'hFF0000; // red
+        else if (y < BAND_H * 2)
+            rgb_o <= 24'hFF8000; // orange
+        else if (y < BAND_H * 3)
+            rgb_o <= 24'hFFFF00; // yellow
+        else if (y < BAND_H * 4)
+            rgb_o <= 24'h00FF00; // green
+        else if (y < BAND_H * 5)
+            rgb_o <= 24'h00FFFF; // cyan
+        else if (y < BAND_H * 6)
+            rgb_o <= 24'h0000FF; // blue
+        else if (y < BAND_H * 7)
+            rgb_o <= 24'h8000FF; // purple
+        else if (y < BAND_H * 8)
+            rgb_o <= 24'h000000; // black
+        else
+            rgb_o <= 24'hFFFFFF; // white
     end
 end 
 endmodule
