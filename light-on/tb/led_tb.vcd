@@ -1,0 +1,817 @@
+$date
+	Sat Apr 04 06:41:10 2026
+$end
+$version
+	Icarus Verilog
+$end
+$timescale
+	1ps
+$end
+$scope module led_tb $end
+$var wire 6 ! led [5:0] $end
+$var reg 1 " clk $end
+$var reg 1 # key_i $end
+$var reg 1 $ rst_n $end
+$scope module uut $end
+$var wire 1 " clk $end
+$var wire 1 # key_i $end
+$var wire 6 % led [5:0] $end
+$var wire 1 $ rst_n $end
+$var wire 1 & rst_n_key $end
+$var wire 1 ' pwm_signal $end
+$var wire 2 ( key_state [1:0] $end
+$var wire 6 ) bin_sec [5:0] $end
+$var parameter 6 * A_MINUTE_SEC $end
+$var parameter 8 + BRIGHTNESS $end
+$var parameter 32 , CLOCK_FREQUENCY $end
+$var parameter 32 - LED_COUNT $end
+$var reg 8 . brightness [7:0] $end
+$var reg 6 / led_r [5:0] $end
+$var integer 32 0 i [31:0] $end
+$scope module key_ctrl_inst $end
+$var wire 1 " clk $end
+$var wire 1 # key_i $end
+$var wire 1 & rst_n $end
+$var wire 1 1 key_o $end
+$var parameter 2 2 S1 $end
+$var parameter 2 3 S2 $end
+$var parameter 2 4 S3 $end
+$var parameter 2 5 S4 $end
+$var reg 2 6 current_state [1:0] $end
+$var reg 2 7 key_state [1:0] $end
+$var reg 1 8 key_tmp $end
+$var reg 2 9 next_state [1:0] $end
+$scope module debouncer_inst $end
+$var wire 1 " clk $end
+$var wire 1 # key_i $end
+$var wire 1 & rst_n $end
+$var parameter 32 : CLOCK_FREQUENCY $end
+$var parameter 64 ; DEBOUNCER_COUNT $end
+$var parameter 32 < STABLE_TIMES $end
+$var reg 20 = cnt [19:0] $end
+$var reg 1 1 key_o $end
+$var reg 1 > key_tmp $end
+$upscope $end
+$upscope $end
+$scope module pwm $end
+$var wire 1 " clk $end
+$var wire 8 ? duty [7:0] $end
+$var wire 1 & rst_n $end
+$var parameter 8 @ DFLT_DUTY $end
+$var reg 8 A cnt [7:0] $end
+$var reg 1 ' pwm_o $end
+$upscope $end
+$scope module sec_cnt_inst $end
+$var wire 1 " clk $end
+$var wire 1 & rst_n $end
+$var wire 1 B t1s $end
+$var parameter 6 C A_MINUTE_SEC $end
+$var parameter 32 D CLOCK_FREQUENCY $end
+$var reg 6 E bin_sec [5:0] $end
+$var reg 25 F cnt_1s [24:0] $end
+$upscope $end
+$upscope $end
+$scope task press_key $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+$comment Show the parameter values. $end
+$dumpall
+b1000 D
+b100 C
+b1111111 @
+b1 <
+b1 ;
+b1111101000 :
+b11 5
+b10 4
+b1 3
+b0 2
+b110 -
+b1000 ,
+b1000000 +
+b100 *
+$end
+#0
+$dumpvars
+b0 F
+b0 E
+0B
+b0 A
+b1000000 ?
+1>
+b0 =
+b0 9
+08
+b0 7
+b0 6
+11
+bx 0
+b0 /
+b1000000 .
+b0 )
+b0 (
+1'
+0&
+b111111 %
+1$
+1#
+0"
+b111111 !
+$end
+#5000
+1"
+#10000
+0"
+#15000
+1"
+#20000
+0"
+#25000
+1"
+#30000
+0"
+#35000
+1&
+0$
+1"
+#40000
+0"
+#45000
+b1 .
+b1 ?
+b1 A
+b1 F
+18
+b1 =
+b110 0
+1"
+#50000
+0"
+#55000
+b0 =
+b10 F
+b10 A
+0'
+b110 0
+1"
+#60000
+0"
+#65000
+b11 A
+b11 F
+b1 =
+b110 0
+1"
+#70000
+0"
+#75000
+b0 =
+b100 F
+b100 A
+b110 0
+1"
+#80000
+0"
+#85000
+b101 A
+b101 F
+b1 =
+b110 0
+1"
+#90000
+0"
+#95000
+b0 =
+b110 F
+b110 A
+b110 0
+1"
+#100000
+0"
+#105000
+1B
+b111 A
+b111 F
+b1 =
+b110 0
+1"
+#110000
+0"
+#115000
+0B
+b0 =
+b0 F
+b1 )
+b1 E
+b1000 A
+b110 0
+1"
+#120000
+0"
+#125000
+b1001 A
+b1 F
+b1 =
+b110 0
+1"
+#130000
+0"
+#135000
+b0 =
+b10 F
+b1010 A
+b110 0
+1"
+#140000
+0"
+#145000
+b1011 A
+b11 F
+b1 =
+b110 0
+1"
+#150000
+0"
+#155000
+b0 =
+0>
+b100 F
+b1100 A
+b110 0
+0#
+1"
+#160000
+0"
+#165000
+b1101 A
+b101 F
+b1 =
+b110 0
+1"
+#170000
+0"
+#175000
+b1 9
+b0 =
+01
+b110 F
+b1110 A
+b110 0
+1"
+#180000
+0"
+#185000
+1B
+b1 (
+b1 7
+b1111 A
+b111 F
+b1 6
+08
+b1 =
+b110 0
+1"
+#190000
+0"
+#195000
+0B
+b0 =
+b0 F
+b10 )
+b10 E
+b10000 A
+b1010101 .
+b1010101 ?
+b110 0
+1"
+#200000
+0"
+#205000
+1'
+b10001 A
+b1 F
+b1 =
+b110 0
+1"
+#210000
+0"
+#215000
+b111101 !
+b111101 %
+b0 =
+1>
+b10 F
+b10010 A
+b10 /
+b110 0
+1#
+1"
+#220000
+0"
+#225000
+b10011 A
+b11 F
+b1 =
+b110 0
+1"
+#230000
+0"
+#235000
+b0 =
+11
+b100 F
+b10100 A
+b110 0
+1"
+#240000
+0"
+#245000
+b10101 A
+b101 F
+18
+b1 =
+b110 0
+1"
+#250000
+0"
+#255000
+b0 =
+b110 F
+b10110 A
+b110 0
+1"
+#260000
+0"
+#265000
+1B
+b10111 A
+b111 F
+b1 =
+b110 0
+1"
+#270000
+0"
+#275000
+0B
+b0 =
+0>
+b0 F
+b11 )
+b11 E
+b11000 A
+b110 0
+0#
+1"
+#280000
+0"
+#285000
+b111100 !
+b111100 %
+b11 /
+b11001 A
+b1 F
+b1 =
+b110 0
+1"
+#290000
+0"
+#295000
+b10 9
+b0 =
+01
+b10 F
+b11010 A
+b110 0
+1"
+#300000
+0"
+#305000
+b10 (
+b10 7
+b11011 A
+b11 F
+b10 6
+08
+b1 =
+b110 0
+1"
+#310000
+0"
+#315000
+b0 =
+b100 F
+b11100 A
+b10101010 .
+b10101010 ?
+b110 0
+1"
+#320000
+0"
+#325000
+b11101 A
+b101 F
+b1 =
+b110 0
+1"
+#330000
+0"
+#335000
+b0 =
+1>
+b110 F
+b11110 A
+b110 0
+1#
+1"
+#340000
+0"
+#345000
+1B
+b11111 A
+b111 F
+b1 =
+b110 0
+1"
+#350000
+0"
+#355000
+0B
+b0 =
+11
+b0 F
+b0 )
+b0 E
+b100000 A
+b110 0
+1"
+#360000
+0"
+#365000
+b111111 !
+b111111 %
+b0 /
+b100001 A
+b1 F
+18
+b1 =
+b110 0
+1"
+#370000
+0"
+#375000
+b0 =
+b10 F
+b100010 A
+b110 0
+1"
+#380000
+0"
+#385000
+b100011 A
+b11 F
+b1 =
+b110 0
+1"
+#390000
+0"
+#395000
+b0 =
+0>
+b100 F
+b100100 A
+b110 0
+0#
+1"
+#400000
+0"
+#405000
+b100101 A
+b101 F
+b1 =
+b110 0
+1"
+#410000
+0"
+#415000
+b11 9
+b0 =
+01
+b110 F
+b100110 A
+b110 0
+1"
+#420000
+0"
+#425000
+1B
+b11 (
+b11 7
+b100111 A
+b111 F
+b11 6
+08
+b1 =
+b110 0
+1"
+#430000
+0"
+#435000
+0B
+b0 =
+b0 F
+b1 )
+b1 E
+b101000 A
+b11111111 .
+b11111111 ?
+b110 0
+1"
+#440000
+0"
+#445000
+b111110 !
+b111110 %
+b1 /
+b101001 A
+b1 F
+b1 =
+b110 0
+1"
+#450000
+0"
+#455000
+b0 =
+1>
+b10 F
+b101010 A
+b110 0
+1#
+1"
+#460000
+0"
+#465000
+b101011 A
+b11 F
+b1 =
+b110 0
+1"
+#470000
+0"
+#475000
+b0 =
+11
+b100 F
+b101100 A
+b110 0
+1"
+#480000
+0"
+#485000
+b101101 A
+b101 F
+18
+b1 =
+b110 0
+1"
+#490000
+0"
+#495000
+b0 =
+b110 F
+b101110 A
+b110 0
+1"
+#500000
+0"
+#505000
+1B
+b101111 A
+b111 F
+b1 =
+b110 0
+1"
+#510000
+0"
+#515000
+0B
+b0 =
+b0 F
+b10 )
+b10 E
+b110000 A
+b110 0
+1"
+#520000
+0"
+#525000
+b111101 !
+b111101 %
+b10 /
+b110001 A
+b1 F
+b1 =
+b110 0
+1"
+#530000
+0"
+#535000
+b0 =
+b10 F
+b110010 A
+b110 0
+1"
+#540000
+0"
+#545000
+b110011 A
+b11 F
+b1 =
+b110 0
+1"
+#550000
+0"
+#555000
+b0 =
+b100 F
+b110100 A
+b110 0
+1"
+#560000
+0"
+#565000
+b110101 A
+b101 F
+b1 =
+b110 0
+1"
+#570000
+0"
+#575000
+b0 =
+b110 F
+b110110 A
+b110 0
+1"
+#580000
+0"
+#585000
+1B
+b110111 A
+b111 F
+b1 =
+b110 0
+1"
+#590000
+0"
+#595000
+0B
+b0 =
+b0 F
+b11 )
+b11 E
+b111000 A
+b110 0
+1"
+#600000
+0"
+#605000
+b111100 !
+b111100 %
+b11 /
+b111001 A
+b1 F
+b1 =
+b110 0
+1"
+#610000
+0"
+#615000
+b0 =
+b10 F
+b111010 A
+b110 0
+1"
+#620000
+0"
+#625000
+b111011 A
+b11 F
+b1 =
+b110 0
+1"
+#630000
+0"
+#635000
+b0 =
+b100 F
+b111100 A
+b110 0
+1"
+#640000
+0"
+#645000
+b111101 A
+b101 F
+b1 =
+b110 0
+1"
+#650000
+0"
+#655000
+b0 =
+b110 F
+b111110 A
+b110 0
+1"
+#660000
+0"
+#665000
+1B
+b111111 A
+b111 F
+b1 =
+b110 0
+1"
+#670000
+0"
+#675000
+0B
+b0 =
+b0 F
+b0 )
+b0 E
+b1000000 A
+b110 0
+1"
+#680000
+0"
+#685000
+b111111 !
+b111111 %
+b0 /
+b1000001 A
+b1 F
+b1 =
+b110 0
+1"
+#690000
+0"
+#695000
+b0 =
+b10 F
+b1000010 A
+b110 0
+1"
+#700000
+0"
+#705000
+b1000011 A
+b11 F
+b1 =
+b110 0
+1"
+#710000
+0"
+#715000
+b0 =
+b100 F
+b1000100 A
+b110 0
+1"
+#720000
+0"
+#725000
+b1000101 A
+b101 F
+b1 =
+b110 0
+1"
+#730000
+0"
+#735000
+b0 =
+b110 F
+b1000110 A
+b110 0
+1"
+#740000
+0"
+#745000
+1B
+b1000111 A
+b111 F
+b1 =
+b110 0
+1"
+#750000
+0"
+#755000
+0B
+b0 =
+b0 F
+b1 )
+b1 E
+b1001000 A
+b110 0
+1"
