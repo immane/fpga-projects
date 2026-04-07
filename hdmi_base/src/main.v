@@ -12,7 +12,7 @@ module main(
 );
 
 localparam CLOCK_FREQUENCY = 27_000_000; // 27 MHz input
-localparam [1:0] PLL_PROFILE = 2'd2; // 0:30Hz, 1:40Hz, 2:50Hz, 3:60Hz
+localparam [1:0] PLL_PROFILE = 2'd3; // 0:30Hz, 1:40Hz, 2:50Hz, 3:60Hz
 function integer get_hdmi_freq;
     input [1:0] p;
     begin
