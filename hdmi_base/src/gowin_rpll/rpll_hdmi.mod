@@ -5,16 +5,16 @@
 -part_number GW2AR-LV18QN88C8/I7
 
 
--mod_name Gowin_rPLL
--file_name pll_hdmi
+-mod_name rPLL_HDMI
+-file_name rpll_hdmi
 -path D:/Development/FPGA/hdmi_base/src/gowin_rpll/
 -type PLL
 -rPll true
 -file_type vlg
 -dev_type GW2AR-18C
--dyn_idiv_sel false
+-dyn_idiv_sel true
 -idiv_sel 4
--dyn_fbdiv_sel false
+-dyn_fbdiv_sel true
 -fbdiv_sel 55
 -dyn_odiv_sel false
 -odiv_sel 2

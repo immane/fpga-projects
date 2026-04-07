@@ -5,44 +5,40 @@
 //Part Number: GW2AR-LV18QN88C8/I7
 //Device: GW2AR-18
 //Device Version: C
-//Created Time: Mon Apr  6 03:58:12 2026
 
-module Gowin_rPLL (clkout, lock, clkin);
-
-output clkout;
-output lock;
-input clkin;
-
-wire clkoutp_o;
-wire clkoutd_o;
-wire clkoutd3_o;
-wire gw_gnd;
-
-assign gw_gnd = 1'b0;
-
-rPLL rpll_inst (
-    .CLKOUT(clkout),
-    .LOCK(lock),
-    .CLKOUTP(clkoutp_o),
-    .CLKOUTD(clkoutd_o),
-    .CLKOUTD3(clkoutd3_o),
-    .RESET(gw_gnd),
-    .RESET_P(gw_gnd),
-    .CLKIN(clkin),
-    .CLKFB(gw_gnd),
-    .FBDSEL({gw_gnd,gw_gnd,gw_gnd,gw_gnd,gw_gnd,gw_gnd}),
-    .IDSEL({gw_gnd,gw_gnd,gw_gnd,gw_gnd,gw_gnd,gw_gnd}),
-    .ODSEL({gw_gnd,gw_gnd,gw_gnd,gw_gnd,gw_gnd,gw_gnd}),
-    .PSDA({gw_gnd,gw_gnd,gw_gnd,gw_gnd}),
-    .DUTYDA({gw_gnd,gw_gnd,gw_gnd,gw_gnd}),
-    .FDLY({gw_gnd,gw_gnd,gw_gnd,gw_gnd})
+module rPLL_HDMI #(
+    parameter [1:0] PROFILE = 2'd0 // 0:30Hz, 1:40Hz, 2:50Hz, 3:60Hz
+) (
+    output clkout,
+    output lock,
+    input clkin
 );
 
+wire clkoutp_o, clkoutd_o, clkoutd3_o, gw_gnd;
+assign gw_gnd = 1'b0;
+
+localparam integer IDIV_SEL_CFG =
+    (PROFILE == 2'd0) ? 3 : // 30Hz: 74.25MHz pixel -> 371.25MHz 5x
+    (PROFILE == 2'd1) ? 2 : // 40Hz: 99.00MHz pixel -> 495.00MHz 5x
+    (PROFILE == 2'd2) ? 1 : // 50Hz: 123.75MHz pixel -> 618.75MHz 5x
+                        1;  // 60Hz: 148.50MHz pixel -> 742.50MHz 5x
+localparam integer FBDIV_SEL_CFG =
+    (PROFILE == 2'd0) ? 54 :
+    (PROFILE == 2'd1) ? 54 :
+    (PROFILE == 2'd2) ? 45 :
+                        54;
+
+rPLL rpll_inst (
+    .CLKOUT(clkout), .LOCK(lock), .CLKOUTP(clkoutp_o), .CLKOUTD(clkoutd_o), .CLKOUTD3(clkoutd3_o),
+    .RESET(gw_gnd), .RESET_P(gw_gnd), .CLKIN(clkin), .CLKFB(gw_gnd),
+    .FBDSEL({6{gw_gnd}}), .IDSEL({6{gw_gnd}}), .ODSEL({6{gw_gnd}}),
+    .PSDA({4{gw_gnd}}), .DUTYDA({4{gw_gnd}}), .FDLY({4{gw_gnd}})
+);
 defparam rpll_inst.FCLKIN = "27";
 defparam rpll_inst.DYN_IDIV_SEL = "false";
-defparam rpll_inst.IDIV_SEL = 3;
+defparam rpll_inst.IDIV_SEL = IDIV_SEL_CFG;
 defparam rpll_inst.DYN_FBDIV_SEL = "false";
-defparam rpll_inst.FBDIV_SEL = 54;
+defparam rpll_inst.FBDIV_SEL = FBDIV_SEL_CFG;
 defparam rpll_inst.DYN_ODIV_SEL = "false";
 defparam rpll_inst.ODIV_SEL = 2;
 defparam rpll_inst.PSDA_SEL = "0000";
@@ -61,4 +57,4 @@ defparam rpll_inst.CLKOUTD_SRC = "CLKOUT";
 defparam rpll_inst.CLKOUTD3_SRC = "CLKOUT";
 defparam rpll_inst.DEVICE = "GW2AR-18C";
 
-endmodule //Gowin_rPLL
+endmodule

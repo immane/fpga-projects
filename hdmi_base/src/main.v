@@ -12,8 +12,21 @@ module main(
 );
 
 localparam CLOCK_FREQUENCY = 27_000_000; // 27 MHz input
-localparam HDMI_FREQ = 74_250_000; // 74.25 MHz for HDMI
-localparam HDMI_FREQ_5X = 371_250_000; // 5x HDMI frequency for PLL
+localparam [1:0] PLL_PROFILE = 2'd2; // 0:30Hz, 1:40Hz, 2:50Hz, 3:60Hz
+function integer get_hdmi_freq;
+    input [1:0] p;
+    begin
+        case (p)
+            2'd0: get_hdmi_freq = 74_250_000;   // 1080p30 pixel clock
+            2'd1: get_hdmi_freq = 99_000_000;   // 1080p40 pixel clock
+            2'd2: get_hdmi_freq = 123_750_000;  // 1080p50 pixel clock
+            2'd3: get_hdmi_freq = 148_500_000;  // 1080p60 pixel clock
+            default: get_hdmi_freq = 74_250_000;
+        endcase
+    end
+endfunction
+localparam HDMI_FREQ = get_hdmi_freq(PLL_PROFILE);
+localparam HDMI_FREQ_5X = HDMI_FREQ * 5;
 localparam integer TMDS_ALIGN_LATENCY = 1; // 1-cycle align for registered pattern_gen output
 
 
@@ -26,6 +39,7 @@ wire clk_hdmi_5x;
 wire hdmi_rst_n;
 
 reg [31:0] htmi_cnt;
+reg [25:0] led_cnt;
 
 // Video timing generator signals
 wire hsync, vsync, de;
@@ -50,7 +64,7 @@ wire serial_r;
 wire serial_g;
 wire serial_b;
 
-assign hdmi_rst_n = rst_n & lock;
+assign hdmi_rst_n = lock;
 assign de_tmds = de_pipe[TMDS_ALIGN_LATENCY-1];
 assign hsync_tmds = hsync_pipe[TMDS_ALIGN_LATENCY-1];
 assign vsync_tmds = vsync_pipe[TMDS_ALIGN_LATENCY-1];
@@ -64,19 +78,25 @@ always @(posedge clk_hdmi or negedge hdmi_rst_n) begin
     end
 end
 
-// Toggle LED every second based on HDMI frequency
-always @(posedge clk_hdmi or negedge hdmi_rst_n) begin
-    if (!hdmi_rst_n) led <= 1'b0;
-    else if(htmi_cnt == HDMI_FREQ) led <= ~led; // Toggle LED every second
-    else led <= led; // Keep LED state unchanged 
+// LED diagnostic:
+// - PLL unlocked: fast blink (input clock domain alive)
+// - PLL locked:   slow blink (HDMI domain active)
+always @(posedge clk) begin
+    led_cnt <= led_cnt + 26'd1;
+    if (!lock)
+        led <= led_cnt[22];
+    else
+        led <= led_cnt[24];
 end
 
 
-// 1: PLL and clock generation for HDMI
-Gowin_rPLL pll_hdmi(
-    .clkout(clk_hdmi_5x), //output clkout
-    .lock(lock), //output lock
-    .clkin(clk) //input clkin
+// 1: PLL and clock generation
+rPLL_HDMI #(
+    .PROFILE(PLL_PROFILE)
+) pll_hdmi(
+    .clkout(clk_hdmi_5x),
+    .lock(lock),
+    .clkin(clk)
 );
 Gowin_CLKDIV clkdiv_hdmi(
     .clkout(clk_hdmi), //output clkout
@@ -84,8 +104,17 @@ Gowin_CLKDIV clkdiv_hdmi(
     .resetn(hdmi_rst_n) //input resetn
 );
 
-// 2: Instantiate video timing generator
-vid_timing_gen vid_timing(
+// 2: Instantiate video timing generator (1920x1080 timing)
+vid_timing_gen #(
+    .H_ACTIVE(1920),
+    .H_FRONT_PORCH(88),
+    .H_SYNC_PULSE(44),
+    .H_BACK_PORCH(148),
+    .V_ACTIVE(1080),
+    .V_FRONT_PORCH(4),
+    .V_SYNC_PULSE(5),
+    .V_BACK_PORCH(36)
+) vid_timing(
     .clk_hdmi(clk_hdmi),
     .rst_n(hdmi_rst_n),
     .hsync(hsync),
@@ -97,7 +126,10 @@ vid_timing_gen vid_timing(
 );
 
 // 3: Instantiate pattern generator and TMDS encoders
-pattern_gen test_pattern(
+pattern_gen #(
+    .H_ACTIVE(1920),
+    .V_ACTIVE(1080)
+) test_pattern(
     .clk_hdmi(clk_hdmi),
     .rst_n(hdmi_rst_n),
     .de(de),

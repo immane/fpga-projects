@@ -5,15 +5,17 @@
 //Part Number: GW2AR-LV18QN88C8/I7
 //Device: GW2AR-18
 //Device Version: C
-//Created Time: Mon Apr  6 03:58:12 2026
+//Created Time: Tue Apr  7 09:15:27 2026
 
 //Change the instance name and port connections to the signal names
 //--------Copy here to design--------
 
-    Gowin_rPLL your_instance_name(
+    rPLL_HDMI your_instance_name(
         .clkout(clkout), //output clkout
         .lock(lock), //output lock
-        .clkin(clkin) //input clkin
+        .clkin(clkin), //input clkin
+        .fbdsel(fbdsel), //input [5:0] fbdsel
+        .idsel(idsel) //input [5:0] idsel
     );
 
 //--------Copy end-------------------

@@ -6,7 +6,7 @@
     <Device name="GW2AR-18C" pn="GW2AR-LV18QN88C8/I7">gw2ar18c-000</Device>
     <FileList>
         <File path="src/gowin_clkdiv/clkdiv_hdmi.v" type="file.verilog" enable="1"/>
-        <File path="src/gowin_rpll/pll_hdmi.v" type="file.verilog" enable="1"/>
+        <File path="src/gowin_rpll/rpll_hdmi.v" type="file.verilog" enable="1"/>
         <File path="src/main.v" type="file.verilog" enable="1"/>
         <File path="src/pattern_gen.v" type="file.verilog" enable="1"/>
         <File path="src/serlizer_10to1.v" type="file.verilog" enable="1"/>
