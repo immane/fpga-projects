@@ -11,16 +11,17 @@ module main(
     output wire tmds_data2_p, output wire tmds_data2_n   // Red
 );
 
+// Timing parameters
 localparam CLOCK_FREQUENCY = 27_000_000; // 27 MHz input
-localparam [1:0] PLL_PROFILE = 2'd3; // 0:30Hz, 1:40Hz, 2:50Hz, 3:60Hz
+localparam [1:0] PLL_PROFILE = 2'd0; // 0:30Hz, 1:40Hz, 2:50Hz, 3:60Hz
 function integer get_hdmi_freq;
     input [1:0] p;
     begin
         case (p)
-            2'd0: get_hdmi_freq = 74_250_000;   // 1080p30 pixel clock
+            2'd0: get_hdmi_freq = 74_250_000;   // 1080p30 / 720p60 pixel clock
             2'd1: get_hdmi_freq = 99_000_000;   // 1080p40 pixel clock
             2'd2: get_hdmi_freq = 123_750_000;  // 1080p50 pixel clock
-            2'd3: get_hdmi_freq = 148_500_000;  // 1080p60 pixel clock
+            2'd3: get_hdmi_freq = 148_500_000;  // 1080p60 / 2k30 pixel clock
             default: get_hdmi_freq = 74_250_000;
         endcase
     end
@@ -29,6 +30,30 @@ localparam HDMI_FREQ = get_hdmi_freq(PLL_PROFILE);
 localparam HDMI_FREQ_5X = HDMI_FREQ * 5;
 localparam integer TMDS_ALIGN_LATENCY = 1; // 1-cycle align for registered pattern_gen output
 
+// HDMI config
+// 1080p
+/*
+localparam integer 
+    H_ACTIVE = 1920,
+    H_FRONT_PORCH = 88,
+    H_SYNC_PULSE = 44,
+    H_BACK_PORCH = 148,
+    V_ACTIVE = 1080,
+    V_FRONT_PORCH = 4,
+    V_SYNC_PULSE = 5,
+    V_BACK_PORCH = 36,
+*/
+
+// 720p
+localparam integer 
+    H_ACTIVE = 1280,
+    H_FRONT_PORCH = 110,
+    H_SYNC_PULSE = 40,
+    H_BACK_PORCH = 220,
+    V_ACTIVE = 720,
+    V_FRONT_PORCH = 5,
+    V_SYNC_PULSE = 5,
+    V_BACK_PORCH = 20;
 
 // Initial values for registers
 
@@ -45,24 +70,15 @@ reg [25:0] led_cnt;
 wire hsync, vsync, de;
 wire [11:0] x, y;
 wire frame_end;
-reg [TMDS_ALIGN_LATENCY-1:0] de_pipe;
-reg [TMDS_ALIGN_LATENCY-1:0] hsync_pipe;
-reg [TMDS_ALIGN_LATENCY-1:0] vsync_pipe;
+reg [TMDS_ALIGN_LATENCY-1:0] de_pipe, hsync_pipe, vsync_pipe;
 integer i;
 
-wire de_tmds;
-wire hsync_tmds;
-wire vsync_tmds;
+wire de_tmds, hsync_tmds, vsync_tmds;
 
 // RGB output from pattern generator
 wire [23:0] rgb;
-wire [9:0] tmds_r;
-wire [9:0] tmds_g;
-wire [9:0] tmds_b;
-wire serial_clk;
-wire serial_r;
-wire serial_g;
-wire serial_b;
+wire [9:0] tmds_r, tmds_g, tmds_b;
+wire serial_clk, serial_r, serial_g, serial_b;
 
 assign hdmi_rst_n = lock;
 assign de_tmds = de_pipe[TMDS_ALIGN_LATENCY-1];
@@ -106,14 +122,14 @@ Gowin_CLKDIV clkdiv_hdmi(
 
 // 2: Instantiate video timing generator (1920x1080 timing)
 vid_timing_gen #(
-    .H_ACTIVE(1920),
-    .H_FRONT_PORCH(88),
-    .H_SYNC_PULSE(44),
-    .H_BACK_PORCH(148),
-    .V_ACTIVE(1080),
-    .V_FRONT_PORCH(4),
-    .V_SYNC_PULSE(5),
-    .V_BACK_PORCH(36)
+    .H_ACTIVE(H_ACTIVE),
+    .H_FRONT_PORCH(H_FRONT_PORCH),
+    .H_SYNC_PULSE(H_SYNC_PULSE),
+    .H_BACK_PORCH(H_BACK_PORCH),
+    .V_ACTIVE(V_ACTIVE),
+    .V_FRONT_PORCH(V_FRONT_PORCH),
+    .V_SYNC_PULSE(V_SYNC_PULSE),
+    .V_BACK_PORCH(V_BACK_PORCH)
 ) vid_timing(
     .clk_hdmi(clk_hdmi),
     .rst_n(hdmi_rst_n),
@@ -127,8 +143,8 @@ vid_timing_gen #(
 
 // 3: Instantiate pattern generator and TMDS encoders
 pattern_gen #(
-    .H_ACTIVE(1920),
-    .V_ACTIVE(1080)
+    .H_ACTIVE(H_ACTIVE),
+    .V_ACTIVE(V_ACTIVE)
 ) test_pattern(
     .clk_hdmi(clk_hdmi),
     .rst_n(hdmi_rst_n),
@@ -138,24 +154,6 @@ pattern_gen #(
     .frame_end(frame_end),
     .rgb_o(rgb) // Connect to TMDS encoder later
 );
-
-// Unified control-signal alignment pipeline for TMDS.
-always @(posedge clk_hdmi or negedge hdmi_rst_n) begin
-    if (!hdmi_rst_n) begin
-        de_pipe <= {TMDS_ALIGN_LATENCY{1'b0}};
-        hsync_pipe <= {TMDS_ALIGN_LATENCY{1'b0}};
-        vsync_pipe <= {TMDS_ALIGN_LATENCY{1'b0}};
-    end else begin
-        de_pipe[0] <= de;
-        hsync_pipe[0] <= hsync;
-        vsync_pipe[0] <= vsync;
-        for (i = 1; i < TMDS_ALIGN_LATENCY; i = i + 1) begin
-            de_pipe[i] <= de_pipe[i-1];
-            hsync_pipe[i] <= hsync_pipe[i-1];
-            vsync_pipe[i] <= vsync_pipe[i-1];
-        end
-    end
-end
 
 // 4: Instantiate TMDS encoders for RGB channels
 tmds_encoder tmds_encoder_r(
@@ -183,6 +181,24 @@ tmds_encoder tmds_encoder_b(
     .tmds_o(tmds_b)
 );
 
+// Unified control-signal alignment pipeline for TMDS.
+always @(posedge clk_hdmi or negedge hdmi_rst_n) begin
+    if (!hdmi_rst_n) begin
+        de_pipe <= {TMDS_ALIGN_LATENCY{1'b0}};
+        hsync_pipe <= {TMDS_ALIGN_LATENCY{1'b0}};
+        vsync_pipe <= {TMDS_ALIGN_LATENCY{1'b0}};
+    end else begin
+        de_pipe[0] <= de;
+        hsync_pipe[0] <= hsync;
+        vsync_pipe[0] <= vsync;
+        for (i = 1; i < TMDS_ALIGN_LATENCY; i = i + 1) begin
+            de_pipe[i] <= de_pipe[i-1];
+            hsync_pipe[i] <= hsync_pipe[i-1];
+            vsync_pipe[i] <= vsync_pipe[i-1];
+        end
+    end
+end
+
 // 5: Connect TMDS outputs to HDMI output pins (not shown here, depends on board pinout)
 serlizer_10to1 u_ser_clk (
     .clk_hdmi    (clk_hdmi),
@@ -191,27 +207,9 @@ serlizer_10to1 u_ser_clk (
     .parallel_i  (10'b0000011111),   // Control code for clock channel
     .serial_o    (serial_clk)
 );
-serlizer_10to1 u_ser_r (
-    .clk_hdmi    (clk_hdmi),
-    .clk_hdmi_5x (clk_hdmi_5x),
-    .rst_n       (hdmi_rst_n),
-    .parallel_i  (tmds_r),
-    .serial_o    (serial_r)
-);
-serlizer_10to1 u_ser_g (
-    .clk_hdmi    (clk_hdmi),
-    .clk_hdmi_5x (clk_hdmi_5x),
-    .rst_n       (hdmi_rst_n),
-    .parallel_i  (tmds_g),
-    .serial_o    (serial_g)
-);
-serlizer_10to1 u_ser_b (
-    .clk_hdmi    (clk_hdmi),
-    .clk_hdmi_5x (clk_hdmi_5x),
-    .rst_n       (hdmi_rst_n),
-    .parallel_i  (tmds_b),
-    .serial_o    (serial_b)
-);
+serlizer_10to1 u_ser_r (.clk_hdmi (clk_hdmi), .clk_hdmi_5x (clk_hdmi_5x), .rst_n (hdmi_rst_n), .parallel_i (tmds_r), .serial_o (serial_r));
+serlizer_10to1 u_ser_g (.clk_hdmi (clk_hdmi), .clk_hdmi_5x (clk_hdmi_5x), .rst_n (hdmi_rst_n), .parallel_i (tmds_g), .serial_o (serial_g));
+serlizer_10to1 u_ser_b (.clk_hdmi (clk_hdmi), .clk_hdmi_5x (clk_hdmi_5x), .rst_n (hdmi_rst_n), .parallel_i (tmds_b), .serial_o (serial_b));
 
 // 6: Connect serialized outputs to HDMI output pins using differential buffers (not shown here, depends on board pinout)
 ELVDS_OBUF u_obuf_clk (.I (serial_clk), .O (tmds_clk_p), .OB (tmds_clk_n));
