@@ -1,5 +1,7 @@
 # Generated build and implementation outputs
 impl/
+*.out
+*.obj
 
 # User-specific project settings
 *.gprj.user

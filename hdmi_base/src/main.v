@@ -28,11 +28,11 @@ function integer get_hdmi_freq;
 endfunction
 localparam HDMI_FREQ = get_hdmi_freq(PLL_PROFILE);
 localparam HDMI_FREQ_5X = HDMI_FREQ * 5;
-localparam integer TMDS_ALIGN_LATENCY = 1; // 1-cycle align for registered pattern_gen output
+localparam integer TMDS_ALIGN_LATENCY = 2; // line-buffer read data is registered once more before TMDS encoding
 
 // HDMI config
-// 1080p
 /*
+// 1080p
 localparam integer 
     H_ACTIVE = 1920,
     H_FRONT_PORCH = 88,
@@ -41,7 +41,7 @@ localparam integer
     V_ACTIVE = 1080,
     V_FRONT_PORCH = 4,
     V_SYNC_PULSE = 5,
-    V_BACK_PORCH = 36,
+    V_BACK_PORCH = 36;
 */
 
 // 720p
@@ -54,6 +54,12 @@ localparam integer
     V_FRONT_PORCH = 5,
     V_SYNC_PULSE = 5,
     V_BACK_PORCH = 20;
+
+// Derived timing parameters
+localparam integer
+    H_TOTAL = H_ACTIVE + H_FRONT_PORCH + H_SYNC_PULSE + H_BACK_PORCH,
+    V_TOTAL = V_ACTIVE + V_FRONT_PORCH + V_SYNC_PULSE + V_BACK_PORCH;
+
 
 // Initial values for registers
 
@@ -75,8 +81,9 @@ integer i;
 
 wire de_tmds, hsync_tmds, vsync_tmds;
 
-// RGB output from pattern generator
-wire [23:0] rgb;
+// RGB output from pattern generator / line buffer
+reg [23:0] rgb;
+wire [23:0] rgb_from_buf;
 wire [9:0] tmds_r, tmds_g, tmds_b;
 wire serial_clk, serial_r, serial_g, serial_b;
 
@@ -107,6 +114,20 @@ end
 
 
 // 1: PLL and clock generation
+// Generate System clock (200MHz) and CPU clock (100MHz) from the input 27MHz using rPLL_SYS
+wire clk_sys;    // 200MHz
+wire clk_sys_90; // 200MHz with 90-degree phase shift
+wire clk_cpu;    // 100MHz
+wire lock_sys;
+rPLL_SYS rpll_sys(
+    .clkin(clk),
+    .clkout(clk_sys),
+    .clkoutp(clk_sys_90),
+    .clkoutd(clk_cpu),
+    .lock(lock_sys)
+);
+
+// Generate HDMI clock (e.g. 148.5MHz for 1080p60) from the input 27MHz using rPLL_HDMI
 rPLL_HDMI #(
     .PROFILE(PLL_PROFILE)
 ) pll_hdmi(
@@ -141,26 +162,62 @@ vid_timing_gen #(
     .frame_end(frame_end)
 );
 
-// 3: Instantiate pattern generator and TMDS encoders
+// 3: Pattern generator output goes through line buffer before TMDS encoding
+wire [23:0] rgb_pattern_o;
 pattern_gen #(
     .H_ACTIVE(H_ACTIVE),
     .V_ACTIVE(V_ACTIVE)
 ) test_pattern(
-    .clk_hdmi(clk_hdmi),
+    .clk_hdmi(clk_sys),
     .rst_n(hdmi_rst_n),
     .de(de),
     .x(x),
     .y(y),
     .frame_end(frame_end),
-    .rgb_o(rgb) // Connect to TMDS encoder later
+    .rgb_o(rgb_pattern_o) // Connect to TMDS encoder later
 );
+
+// Dither RGB888 pattern output to RGB565 for HDMI line buffer
+wire [23:0] rgb_pattern_o_565;
+wire [23:0] rgb_from_buf_565;
+dither_rgb888_to_565 u_dither (
+    .rgb888(rgb_pattern_o),
+    .x(x),
+    .y(y),
+    .rgb565(rgb_pattern_o_565) 
+);
+
+// Line buffer to align video data with TMDS encoding timing (1 line buffer depth is sufficient for 720p/1080p)
+async_fifo #(
+    .ADDRESS_WIDTH(11),
+    .DATA_WIDTH(16)
+) hdmi_line_buf_fifo (
+    .w_clk(clk_sys),
+    .w_rst_n(rst_n),
+    .w_en(de),
+    .w_data(rgb_pattern_o_565),
+    .full(),
+
+    .r_clk(clk_hdmi),
+    .r_rst_n(hdmi_rst_n),
+    .r_en(de),
+    .r_data(rgb_from_buf_565),
+    .empty()
+);
+
+// Upscale RGB565 from line buffer to RGB888 for TMDS encoding
+wire [23:0] rgb565_upscale_888 = {
+	{rgb_from_buf_565[15:11], rgb_from_buf_565[15:13]},
+	{rgb_from_buf_565[10:5], rgb_from_buf_565[10:9]},
+	{rgb_from_buf_565[4:0], rgb_from_buf_565[4:2]}
+};
 
 // 4: Instantiate TMDS encoders for RGB channels
 tmds_encoder tmds_encoder_r(
     .clk_hdmi(clk_hdmi),
     .rst_n(hdmi_rst_n),
     .de(de_tmds),
-    .data_i(rgb[23:16]),
+    .data_i(rgb565_upscale_888[23:16]),
     .ctrl_i(2'b00),
     .tmds_o(tmds_r)
 );
@@ -168,7 +225,7 @@ tmds_encoder tmds_encoder_g(
     .clk_hdmi(clk_hdmi),
     .rst_n(hdmi_rst_n),
     .de(de_tmds),
-    .data_i(rgb[15:8]),
+    .data_i(rgb565_upscale_888[15:8]),
     .ctrl_i(2'b00),
     .tmds_o(tmds_g)
 );
@@ -176,7 +233,7 @@ tmds_encoder tmds_encoder_b(
     .clk_hdmi(clk_hdmi),
     .rst_n(hdmi_rst_n),
     .de(de_tmds),
-    .data_i(rgb[7:0]),
+    .data_i(rgb565_upscale_888[7:0]),
     .ctrl_i({vsync_tmds, hsync_tmds}),
     .tmds_o(tmds_b)
 );
