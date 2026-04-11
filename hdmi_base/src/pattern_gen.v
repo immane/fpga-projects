@@ -2,36 +2,17 @@ module pattern_gen # (
     parameter H_ACTIVE = 1280,
     parameter V_ACTIVE = 720
 ) (
-    input wire clk_hdmi,
-    input wire rst_n,
-
+    input wire clk,
     input wire [11:0] x,
     input wire [11:0] y,
-    input wire de,
-    input wire frame_end,
-
     output reg [23:0] rgb_o
 );
+    // Define vertical band width for 9 color bands
+    localparam integer BAND_H = H_ACTIVE / 9;
 
-localparam integer BAND_H = H_ACTIVE / 9;
-
-// Generate a simple color pattern based on the pixel position and frame count
-reg [23:0] frame_cnt;
-always @(posedge clk_hdmi or negedge rst_n) begin
-    if (!rst_n)
-        frame_cnt <= 24'd0;
-    else if (frame_end)
-        frame_cnt <= frame_cnt + 24'd1;
-end
-
-// Update RGB output: 9 vertical bands (left->right):
-// red, orange, yellow, green, cyan, blue, purple, black, white.
-always @(posedge clk_hdmi or negedge rst_n) begin
-    if (!rst_n)
-        rgb_o <= 24'h000000;
-    else if (!de)
-        rgb_o <= 24'h000000;
-    else begin
+    // Update RGB output: 9 vertical bands (left->right):
+    // red, orange, yellow, green, cyan, blue, purple, black, white.
+    always @(posedge clk) begin
         if (x < BAND_H * 1)
             rgb_o <= 24'hFF0000; // red
         else if (x < BAND_H * 2)
@@ -47,9 +28,8 @@ always @(posedge clk_hdmi or negedge rst_n) begin
         else if (x < BAND_H * 7)
             rgb_o <= 24'h8000FF; // purple
         else if (x < BAND_H * 8)
-            rgb_o <= 24'h000000; // black
-        else
             rgb_o <= 24'hFFFFFF; // white
-    end
-end 
+        else
+            rgb_o <= 24'h000000; // black
+    end 
 endmodule

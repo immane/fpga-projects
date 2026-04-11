@@ -13,7 +13,7 @@ module main(
 
 // Timing parameters
 localparam CLOCK_FREQUENCY = 27_000_000; // 27 MHz input
-localparam [1:0] PLL_PROFILE = 2'd0; // 0:30Hz, 1:40Hz, 2:50Hz, 3:60Hz
+localparam [1:0] PLL_PROFILE = 2'd3; // 0:30Hz, 1:40Hz, 2:50Hz, 3:60Hz
 function integer get_hdmi_freq;
     input [1:0] p;
     begin
@@ -31,7 +31,6 @@ localparam HDMI_FREQ_5X = HDMI_FREQ * 5;
 localparam integer TMDS_ALIGN_LATENCY = 2; // line-buffer read data is registered once more before TMDS encoding
 
 // HDMI config
-/*
 // 1080p
 localparam integer 
     H_ACTIVE = 1920,
@@ -42,8 +41,8 @@ localparam integer
     V_FRONT_PORCH = 4,
     V_SYNC_PULSE = 5,
     V_BACK_PORCH = 36;
-*/
 
+/*
 // 720p
 localparam integer 
     H_ACTIVE = 1280,
@@ -54,6 +53,7 @@ localparam integer
     V_FRONT_PORCH = 5,
     V_SYNC_PULSE = 5,
     V_BACK_PORCH = 20;
+*/
 
 // Derived timing parameters
 localparam integer
@@ -167,19 +167,16 @@ wire [23:0] rgb_pattern_o;
 pattern_gen #(
     .H_ACTIVE(H_ACTIVE),
     .V_ACTIVE(V_ACTIVE)
-) test_pattern(
-    .clk_hdmi(clk_sys),
-    .rst_n(hdmi_rst_n),
-    .de(de),
+) test_pattern (
+    .clk(clk_sys),
     .x(x),
     .y(y),
-    .frame_end(frame_end),
     .rgb_o(rgb_pattern_o) // Connect to TMDS encoder later
 );
 
 // Dither RGB888 pattern output to RGB565 for HDMI line buffer
 wire [23:0] rgb_pattern_o_565;
-wire [23:0] rgb_from_buf_565;
+wire [15:0] rgb_from_buf_565;
 dither_rgb888_to_565 u_dither (
     .rgb888(rgb_pattern_o),
     .x(x),

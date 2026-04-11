@@ -1,93 +1,196 @@
 # hdmi_base
 
-HDMI base design for Tang Nano 20K (GW2AR-18C), using a 27 MHz input clock and a 1080p test-pattern pipeline.
+HDMI base design for Tang Nano 20K (GW2AR-18C), built around a 27 MHz input clock and a TMDS output pipeline.
 
-## Overview
+This repository is used as a bring-up project for:
 
-This project includes a complete basic video path:
+1. video timing and TMDS verification
+2. clock-domain-crossing experiments
+3. future external framebuffer input (pSRAM or DDR3)
 
-- clock generation (27 MHz -> HDMI 5x -> pixel clock)
-- 1080p timing generation (`hsync`, `vsync`, `de`, `x`, `y`)
-- RGB pattern generation (9 horizontal color bars)
-- TMDS encoding (3 channels)
-- 10:1 serialization and differential output buffers
+## Current Design Status
 
-The top-level is [src/main.v](src/main.v).
+Top-level is [src/main.v](src/main.v).
 
-## Clock Tree
+Current default configuration in [src/main.v](src/main.v):
 
-- input clock: 27.000 MHz
-- PLL output clock: HDMI 5x clock (`clk_hdmi_5x`)
-- CLKDIV output clock: pixel clock (`clk_hdmi`), divide-by-5 from `clk_hdmi_5x`
+1. active timing: 1080p parameters enabled (720p block commented out)
+2. PLL profile: `PLL_PROFILE = 2'd3`
+3. TMDS control alignment: `TMDS_ALIGN_LATENCY = 2`
+4. data path includes async FIFO CDC and RGB888 -> RGB565 -> RGB888 conversion path for experiments
+5. TMDS encoder includes internal pipelining (`de_q/data_q/ctrl_q` and `de_qq/q_m_q/dc_ones_cnt_q`) for timing closure experiments
 
-The PLL wrapper is [src/gowin_rpll/rpll_hdmi.v](src/gowin_rpll/rpll_hdmi.v), and the divide-by-5 clock divider is [src/gowin_clkdiv/clkdiv_hdmi.v](src/gowin_clkdiv/clkdiv_hdmi.v).
+## Architecture
 
-### PLL PROFILE Mapping
+End-to-end path (logical):
 
-`PLL_PROFILE` is defined in [src/main.v](src/main.v):
+1. `clk` (27 MHz) -> HDMI PLL and CLKDIV clocks
+2. video timing generation in HDMI pixel domain (`clk_hdmi`)
+3. pattern source generation in system domain (`clk_sys`)
+4. asynchronous FIFO CDC (`clk_sys` write, `clk_hdmi` read)
+5. TMDS encode (R/G/B)
+6. 10:1 serialize
+7. differential output buffers to HDMI pins
 
-- `0`: 1080p30, pixel 74.25 MHz, 5x 371.25 MHz
-- `1`: 1080p40, pixel 99.00 MHz, 5x 495.00 MHz
-- `2`: 1080p50, pixel 123.75 MHz, 5x target 618.75 MHz
-- `3`: 1080p60, pixel 148.50 MHz, 5x 742.50 MHz
+### Clock Tree
 
-Note: the TMDS serializer uses the 5x clock domain.
+1. input clock: 27.000 MHz (`clk`)
+2. HDMI PLL output: `clk_hdmi_5x`
+3. pixel clock: `clk_hdmi` from `Gowin_CLKDIV` divide-by-5
+4. system clocks from `rPLL_SYS`: `clk_sys`, `clk_sys_90`, `clk_cpu`
 
-## Top-Level Ports
+Related files:
 
-Defined in [src/main.v](src/main.v):
+1. [src/gowin_rpll/rpll_hdmi.v](src/gowin_rpll/rpll_hdmi.v)
+2. [src/gowin_clkdiv/clkdiv_hdmi.v](src/gowin_clkdiv/clkdiv_hdmi.v)
+3. [src/gowin_rpll/rpll_sys.v](src/gowin_rpll/rpll_sys.v)
 
-- inputs:
-  - `clk` (27 MHz)
-  - `rst_n` (active-low reset)
-- debug output:
-  - `led`
-- HDMI differential outputs:
-  - `tmds_clk_p`, `tmds_clk_n`
-  - `tmds_data0_p`, `tmds_data0_n` (blue)
-  - `tmds_data1_p`, `tmds_data1_n` (green)
-  - `tmds_data2_p`, `tmds_data2_n` (red)
+### PLL_PROFILE Mapping
 
-## RTL Blocks
+Defined by `get_hdmi_freq` in [src/main.v](src/main.v):
 
-- [src/vid_timing_gen.v](src/vid_timing_gen.v): 1920x1080 timing generator.
-- [src/pattern_gen.v](src/pattern_gen.v): 9 horizontal bars (red, orange, yellow, green, cyan, blue, purple, black, white).
-- [src/tmds_encoder.v](src/tmds_encoder.v): TMDS channel encoder.
-- [src/serlizer_10to1.v](src/serlizer_10to1.v): OSER10 wrapper for 10:1 serialization.
+1. `0`: pixel 74.25 MHz, 5x 371.25 MHz
+2. `1`: pixel 99.00 MHz, 5x 495.00 MHz
+3. `2`: pixel 123.75 MHz, 5x 618.75 MHz
+4. `3`: pixel 148.50 MHz, 5x 742.50 MHz
+
+## RTL Modules
+
+Core modules:
+
+1. [src/main.v](src/main.v): top-level integration
+2. [src/vid_timing_gen.v](src/vid_timing_gen.v): timing (`hsync`, `vsync`, `de`, `x`, `y`)
+3. [src/pattern_gen.v](src/pattern_gen.v): RGB pattern source
+4. [src/async_fifo.v](src/async_fifo.v): asynchronous FIFO CDC path (current experimental bridge)
+5. [src/dither_rgb888_to_565.v](src/dither_rgb888_to_565.v): RGB888 -> RGB565 conversion
+6. [src/tmds_encoder.v](src/tmds_encoder.v): TMDS channel encoder
+7. [src/serlizer_10to1.v](src/serlizer_10to1.v): OSER10 wrapper
+
+Legacy/support modules (may be reused depending on branch/experiment):
+
+1. [src/vid_line_buf.v](src/vid_line_buf.v)
+2. [src/sdp_bram.v](src/sdp_bram.v)
+
+## Top-Level I/O
+
+Declared in [src/main.v](src/main.v):
+
+Inputs:
+
+1. `clk` (27 MHz)
+2. `rst_n` (active-low)
+
+Debug:
+
+1. `led`
+
+HDMI differential outputs:
+
+1. `tmds_clk_p`, `tmds_clk_n`
+2. `tmds_data0_p`, `tmds_data0_n` (Blue)
+3. `tmds_data1_p`, `tmds_data1_n` (Green)
+4. `tmds_data2_p`, `tmds_data2_n` (Red)
 
 ## Constraints
 
-- physical constraints: [src/hdmi_base.cst](src/hdmi_base.cst)
-- timing constraints: [src/hdmi_base.sdc](src/hdmi_base.sdc)
+1. pin constraints: [src/hdmi_base.cst](src/hdmi_base.cst)
+2. timing constraints: [src/hdmi_base.sdc](src/hdmi_base.sdc)
 
-Current CST mapping follows Tang Nano 20K HDMI pin groups (TMDS clock + 3 data pairs).
+If you change `PLL_PROFILE`, re-check [src/hdmi_base.sdc](src/hdmi_base.sdc) clock periods to match the active profile.
 
-## Build (Gowin EDA)
+## Build Flow (Gowin EDA)
 
 1. Open [hdmi_base.gprj](hdmi_base.gprj).
-2. Confirm all RTL/IP/constraint files are included.
-3. Run Synthesis.
-4. Run Place & Route.
-5. Program bitstream to board.
+2. Confirm file list includes all `src` files used by your current branch.
+3. Confirm top module is `main`.
+4. Run Synthesis.
+5. Run Place and Route.
+6. Generate bitstream and program board.
 
-Build outputs are under [impl](impl).
+Outputs are under [impl](impl).
 
 ## Simulation
 
-Testbenches are in [tb](tb), including:
+Testbenches are in [tb](tb):
 
-- [tb/main_smoke_tb.v](tb/main_smoke_tb.v)
-- [tb/main_hdmi_tb.v](tb/main_hdmi_tb.v)
-- [tb/vid_timing_gen_tb.v](tb/vid_timing_gen_tb.v)
-- [tb/pattern_gen_tb.v](tb/pattern_gen_tb.v)
-- [tb/tmds_encoder_tb.v](tb/tmds_encoder_tb.v)
-- [tb/tmds_encoder_golden_tb.v](tb/tmds_encoder_golden_tb.v)
+1. [tb/main_smoke_tb.v](tb/main_smoke_tb.v)
+2. [tb/main_hdmi_tb.v](tb/main_hdmi_tb.v)
+3. [tb/vid_timing_gen_tb.v](tb/vid_timing_gen_tb.v)
+4. [tb/pattern_gen_tb.v](tb/pattern_gen_tb.v)
+5. [tb/tmds_encoder_tb.v](tb/tmds_encoder_tb.v)
+6. [tb/tmds_encoder_golden_tb.v](tb/tmds_encoder_golden_tb.v)
 
-For Icarus simulation, vendor primitives are stubbed in [tb/gowin_stub.v](tb/gowin_stub.v).
+Vendor primitive stubs for simulation:
 
-## Current Notes
+1. [tb/gowin_stub.v](tb/gowin_stub.v)
 
-- The HDMI domain reset is gated with PLL lock in [src/main.v](src/main.v).
-- TMDS control alignment latency is configurable in [src/main.v](src/main.v) (`TMDS_ALIGN_LATENCY`).
-- Timing constraints in [src/hdmi_base.sdc](src/hdmi_base.sdc) constrain the HDMI 5x clock at the worst-case profile, so one SDC can cover 30/40/50/60 modes.
-- If edge artifacts appear (for example 1-pixel seam), first verify control/data alignment and refresh timing relationships.
+Example Icarus compile command (Windows path style):
+
+```powershell
+Set-Location d:\Development\FPGA\hdmi_base
+C:\iverilog\bin\iverilog.exe -g2012 -o tb\main_check.out `
+  tb\gowin_stub.v `
+  src\gowin_rpll\rpll_hdmi.v src\gowin_clkdiv\clkdiv_hdmi.v src\gowin_rpll\rpll_sys.v `
+  src\vid_timing_gen.v src\pattern_gen.v src\tmds_encoder.v src\serlizer_10to1.v `
+  src\async_fifo.v src\dither_rgb888_to_565.v src\main.v tb\main_smoke_tb.v
+```
+
+## CDC and Image Artifacts Notes
+
+When testing cross-domain video data, typical symptoms are:
+
+1. stable vertical solid lines
+2. moving dashed/noisy vertical lines
+
+Usually caused by one of these:
+
+1. data/control not aligned after CDC
+2. reading FIFO while empty or writing while full
+3. write/read throughput mismatch over time
+4. reset release order mismatch across domains
+
+Recommended checks:
+
+1. verify FIFO `full` and `empty` handling in [src/main.v](src/main.v)
+2. verify TMDS `de` alignment depth (`TMDS_ALIGN_LATENCY`)
+3. scope `de`, FIFO read enable, and output pixel validity in simulation
+
+## Timing Closure Notes (April 2026)
+
+Observed top failing paths during 1080p60 timing closure were primarily inside TMDS encode logic:
+
+1. `hdmi_line_buf_fifo/fifo_ram/.../DO -> tmds_encoder_*/disparity_*`
+2. then after front-end pipelining, `tmds_encoder_*/data_q_* -> disparity_*`
+3. later-stage residuals around `dc_ones_cnt_q/disparity -> disparity`
+
+Key takeaway:
+
+1. Async FIFO solves CDC safety, but does not by itself fix long single-cycle same-domain paths in `clk_hdmi`.
+
+Current code-side mitigations already present in [src/tmds_encoder.v](src/tmds_encoder.v):
+
+1. stage-0 input register cut (`de_q`, `data_q`, `ctrl_q`)
+2. stage-1 register cut (`de_qq`, `ctrl_qq`, `q_m_q`, `dc_ones_cnt_q`)
+3. simplified running-disparity delta update to reduce combinational depth
+
+Remaining practical closure knobs (without architectural rewrite):
+
+1. add one more local register cut around disparity decision/update in [src/tmds_encoder.v](src/tmds_encoder.v)
+2. keep timing constraints in [src/hdmi_base.sdc](src/hdmi_base.sdc) strictly aligned with active `PLL_PROFILE`
+3. reduce non-essential logic fanout on TMDS critical nets
+
+Known non-blocking simulation warnings in current [src/main.v](src/main.v):
+
+1. RGB565 width mismatch around dither/fifo wiring (`24 -> 16` truncation/padding warnings)
+
+## Planned Integration Direction
+
+The intended long-term direction is external framebuffer input.
+
+For pSRAM/DDR3 integration, keep [src/main.v](src/main.v) structure as:
+
+1. memory controller in `clk_sys` domain produces pixel stream
+2. CDC bridge transfers data into `clk_hdmi` domain
+3. TMDS path remains isolated in `clk_hdmi` domain
+
+This keeps timing closure and functional debugging manageable while migrating from pattern source to real memory-backed video.
