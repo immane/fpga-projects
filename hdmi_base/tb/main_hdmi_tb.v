@@ -3,8 +3,8 @@
 module main_hdmi_tb;
 
 reg clk;
-reg rst_n;
-wire led;
+reg rst_key_n;
+wire [5:0] led;
 wire tmds_clk_p;
 wire tmds_clk_n;
 wire tmds_data0_p;
@@ -18,7 +18,7 @@ integer cycle_count;
 
 main uut (
     .clk(clk),
-    .rst_n(rst_n),
+    .rst_key_n(rst_key_n),
     .led(led),
     .tmds_clk_p(tmds_clk_p),
     .tmds_clk_n(tmds_clk_n),
@@ -58,16 +58,17 @@ endtask
 
 initial begin
     clk = 1'b0;
-    rst_n = 1'b0;
+    // main.v uses rst_n = ~rst_key_n
+    rst_key_n = 1'b1;
     cycle_count = 0;
 
     $dumpfile("tb/main_hdmi_tb.vcd");
     $dumpvars(0, main_hdmi_tb);
 
     repeat (8) @(posedge clk);
-    rst_n = 1'b1;
+    rst_key_n = 1'b0;
 
-    repeat (500) begin
+    repeat (2000) begin
         @(posedge clk);
         cycle_count = cycle_count + 1;
         assert_known_and_complement();

@@ -8,12 +8,12 @@ module dither_rgb888_to_565 (
     wire [7:0] g8 = rgb888[15:8];
     wire [7:0] b8 = rgb888[7:0];
 
-    // 2x2 Bayer dithering pattern
-    wire [1:0] d_map [0:3];
-    assign dmap = {2'd0, 2'd2, 2'd3, 2'd1}; // 2x2 Bayer pattern: [0, 2; 3, 1]
-
-    // Get dither value based on pixel position (x, y)
-    wire [1:0] dither_val = d_map[{y[0], x[0]}];
+    // 2x2 Bayer pattern: [0,2; 3,1]
+    wire [1:0] dither_idx = {y[0], x[0]};
+    wire [1:0] dither_val = (dither_idx == 2'b00) ? 2'd0 :
+                            (dither_idx == 2'b01) ? 2'd2 :
+                            (dither_idx == 2'b10) ? 2'd3 :
+                                                    2'd1;
 
     // Add dither value to each channel before truncation
     wire [8:0] r_res = r8 + {dither_val, 1'b0};

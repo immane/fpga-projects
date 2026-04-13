@@ -16,10 +16,11 @@ module async_fifo #(
     output wire [DATA_WIDTH-1:0] r_data,
     output reg empty
 );
+    // FIFO pointers and synchronization logic 
     reg [ADDRESS_WIDTH:0] w_ptr, r_ptr;
-    wire [ADDRESS_WIDTH:0] w_ptr_gray, r_ptr_gray;
-
-    // Simple asynchronous FIFO using dual-port RAM
+    wire [ADDRESS_WIDTH:0] w_ptr_gray_next, r_ptr_gray_next;
+    
+    // Internal dual-port RAM for FIFO storage
     sdp_bram #(
         .ADDRESS_WIDTH(ADDRESS_WIDTH),
         .DATA_WIDTH(DATA_WIDTH)
@@ -28,20 +29,35 @@ module async_fifo #(
         .w_en(w_en && !full),
         .w_addr(w_ptr[ADDRESS_WIDTH-1:0]),
         .w_data(w_data),
-
         .r_clk(r_clk),
-        .r_en(r_en),
+        .r_en(r_en && !empty), 
         .r_addr(r_ptr[ADDRESS_WIDTH-1:0]),
         .r_data(r_data)
     );
 
-    assign w_ptr_gray = (w_ptr >> 1) ^ w_ptr; // Binary to Gray code
-    assign r_ptr_gray = (r_ptr >> 1) ^ r_ptr; // Binary to Gray code
+    // FIFO pointer management and full/empty flag generation
+    wire [ADDRESS_WIDTH:0] w_ptr_next = w_ptr + (w_en && !full);
+    wire [ADDRESS_WIDTH:0] r_ptr_next = r_ptr + (r_en && !empty);
+    
+    assign w_ptr_gray_next = (w_ptr_next >> 1) ^ w_ptr_next;
+    assign r_ptr_gray_next = (r_ptr_next >> 1) ^ r_ptr_next;
 
+    // Synchronize pointers across clock domains using Gray code to prevent metastability
+    reg [ADDRESS_WIDTH:0] w_ptr_gray, r_ptr_gray;
+    always @(posedge w_clk or negedge w_rst_n) begin
+        if(!w_rst_n) w_ptr_gray <= 0;
+        else         w_ptr_gray <= (w_ptr >> 1) ^ w_ptr;
+    end
+
+    always @(posedge r_clk or negedge r_rst_n) begin
+        if(!r_rst_n) r_ptr_gray <= 0;
+        else         r_ptr_gray <= (r_ptr >> 1) ^ r_ptr;
+    end
+
+    // Synchronize the opposite clock domain's pointer for full/empty detection
     reg [ADDRESS_WIDTH:0] w_ptr_gray_sync_tmp, w_ptr_gray_sync;
     reg [ADDRESS_WIDTH:0] r_ptr_gray_sync_tmp, r_ptr_gray_sync;
 
-    // Synchronize pointers across clock domains
     always @(posedge w_clk or negedge w_rst_n) begin
         if(!w_rst_n) {r_ptr_gray_sync_tmp, r_ptr_gray_sync} <= 0;
         else         {r_ptr_gray_sync_tmp, r_ptr_gray_sync} <= {r_ptr_gray, r_ptr_gray_sync_tmp};
@@ -52,7 +68,7 @@ module async_fifo #(
         else         {w_ptr_gray_sync_tmp, w_ptr_gray_sync} <= {w_ptr_gray, w_ptr_gray_sync_tmp};
     end        
 
-    // Full when next write pointer equals read pointer (in Gray code)
+    // Update pointers and generate full/empty flags
     always @(posedge w_clk or negedge w_rst_n) begin
         if(!w_rst_n) w_ptr <= 0;
         else if (w_en && !full) w_ptr <= w_ptr + 1;
@@ -63,9 +79,18 @@ module async_fifo #(
         else if (r_en && !empty) r_ptr <= r_ptr + 1;
     end
 
-    // Determine full and empty conditions based on synchronized pointers
-    always @(*) begin
-        full = (w_ptr_gray == {~r_ptr_gray_sync[ADDRESS_WIDTH:ADDRESS_WIDTH-1], r_ptr_gray_sync[ADDRESS_WIDTH-2:0]});
-        empty = (r_ptr_gray == w_ptr_gray_sync);
+    // Full when next write pointer equals read pointer with MSB inverted (Gray code)
+    wire full_val = (w_ptr_gray_next == {~r_ptr_gray_sync[ADDRESS_WIDTH:ADDRESS_WIDTH-1], r_ptr_gray_sync[ADDRESS_WIDTH-2:0]});
+    always @(posedge w_clk or negedge w_rst_n) begin
+        if(!w_rst_n) full <= 1'b0;
+        else         full <= full_val;
     end
+
+    // Empty when next read pointer equals write pointer (Gray code)
+    wire empty_val = (r_ptr_gray_next == w_ptr_gray_sync);
+    always @(posedge r_clk or negedge r_rst_n) begin
+        if(!r_rst_n) empty <= 1'b1;
+        else         empty <= empty_val;
+    end
+
 endmodule

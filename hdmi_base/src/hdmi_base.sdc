@@ -10,4 +10,4 @@ create_clock -name clk_hdmi_5x -period 1.347 [get_pins {clkdiv_hdmi/clkdiv_inst/
 create_generated_clock -name clk_hdmi -source [get_pins {clkdiv_hdmi/clkdiv_inst/HCLKIN}] -divide_by 5 [get_pins {clkdiv_hdmi/clkdiv_inst/CLKOUT}]
 
 # rst_n is an asynchronous reset and should not be timing-closed as data.
-set_false_path -from [get_ports {rst_n}]
+set_false_path -from [get_ports {rst_key_n}]

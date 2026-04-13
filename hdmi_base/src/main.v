@@ -1,7 +1,7 @@
 module main(
     input clk,
-    input rst_n,
-    output reg led,
+    input rst_key_n,
+    output wire [5:0]led,
 
     // HDMI output signals
     output wire tmds_clk_p,
@@ -10,6 +10,8 @@ module main(
     output wire tmds_data1_p, output wire tmds_data1_n,  // Green
     output wire tmds_data2_p, output wire tmds_data2_n   // Red
 );
+
+wire rst_n = ~rst_key_n; // Active-low reset from button;
 
 // Timing parameters
 localparam CLOCK_FREQUENCY = 27_000_000; // 27 MHz input
@@ -42,8 +44,8 @@ localparam integer
     V_SYNC_PULSE = 5,
     V_BACK_PORCH = 36;
 
-/*
 // 720p
+/*
 localparam integer 
     H_ACTIVE = 1280,
     H_FRONT_PORCH = 110,
@@ -87,7 +89,9 @@ wire [23:0] rgb_from_buf;
 wire [9:0] tmds_r, tmds_g, tmds_b;
 wire serial_clk, serial_r, serial_g, serial_b;
 
-assign hdmi_rst_n = lock;
+// assign hdmi_rst_n = lock;
+assign hdmi_rst_n = rst_n && lock; // Hold HDMI domain in reset until PLL locks
+
 assign de_tmds = de_pipe[TMDS_ALIGN_LATENCY-1];
 assign hsync_tmds = hsync_pipe[TMDS_ALIGN_LATENCY-1];
 assign vsync_tmds = vsync_pipe[TMDS_ALIGN_LATENCY-1];
@@ -106,18 +110,22 @@ end
 // - PLL locked:   slow blink (HDMI domain active)
 always @(posedge clk) begin
     led_cnt <= led_cnt + 26'd1;
-    if (!lock)
-        led <= led_cnt[22];
-    else
-        led <= led_cnt[24];
 end
+assign led[5] = (!lock) ? led_cnt[22] : led_cnt[24];
+
+// Frame counter for debugging
+reg [24:0] rst_cnt = 0;
+always @(posedge clk_sys) begin
+    if(!frame_pulse) rst_cnt <= rst_cnt + 1;
+end
+assign led[0] = rst_cnt[24];
 
 
 // 1: PLL and clock generation
-// Generate System clock (200MHz) and CPU clock (100MHz) from the input 27MHz using rPLL_SYS
-wire clk_sys;    // 200MHz
-wire clk_sys_90; // 200MHz with 90-degree phase shift
-wire clk_cpu;    // 100MHz
+// Generate System clock (~166.5MHz) and CPU clock (~83.25MHz) from 27MHz using rPLL_SYS
+wire clk_sys;    // ~166.5MHz
+wire clk_sys_90; // ~166.5MHz with 90-degree phase shift
+wire clk_cpu;    // ~83.25MHz
 wire lock_sys;
 rPLL_SYS rpll_sys(
     .clkin(clk),
@@ -162,45 +170,74 @@ vid_timing_gen #(
     .frame_end(frame_end)
 );
 
+///////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////// PATTERN GENERATOR ////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////
+
 // 3: Pattern generator output goes through line buffer before TMDS encoding
+// Pattern generator now self-generates x,y coordinates in clk_sys domain (no CDC)
 wire [23:0] rgb_pattern_o;
+wire [11:0] pg_x, pg_y;  // Pattern generator's internal coordinates
+wire ptrn_ve;
+wire fifo_w_en;
 pattern_gen #(
     .H_ACTIVE(H_ACTIVE),
     .V_ACTIVE(V_ACTIVE)
 ) test_pattern (
     .clk(clk_sys),
-    .x(x),
-    .y(y),
-    .rgb_o(rgb_pattern_o) // Connect to TMDS encoder later
+    .rst_n(rst_n),
+    .ready(!fifo_full), // Backpressure from line buffer FIFO
+    .frame_pulse(frame_pulse), // Pulse at the start of each frame for synchronization
+    .x(pg_x),
+    .y(pg_y),
+    .rgb_o(rgb_pattern_o), // Connect to TMDS encoder later
+    .ve(ptrn_ve)
 );
 
-// Dither RGB888 pattern output to RGB565 for HDMI line buffer
-wire [23:0] rgb_pattern_o_565;
-wire [15:0] rgb_from_buf_565;
-dither_rgb888_to_565 u_dither (
-    .rgb888(rgb_pattern_o),
-    .x(x),
-    .y(y),
-    .rgb565(rgb_pattern_o_565) 
-);
+// Vsync to reset pattern generator at the start of each frame 
+reg [2:0] vsync_sync_sys;
+always @(posedge clk_sys or negedge rst_n) begin
+    if (!rst_n) vsync_sync_sys <= 3'b000;
+    else vsync_sync_sys <= {vsync_sync_sys[1:0], vsync};
+end
+wire frame_pulse = vsync_sync_sys[1] && !vsync_sync_sys[2];
+
 
 // Line buffer to align video data with TMDS encoding timing (1 line buffer depth is sufficient for 720p/1080p)
+wire fifo_full, fifo_empty;
+wire fifo_almost_full, fifo_almost_empty;
 async_fifo #(
     .ADDRESS_WIDTH(11),
     .DATA_WIDTH(16)
 ) hdmi_line_buf_fifo (
     .w_clk(clk_sys),
     .w_rst_n(rst_n),
-    .w_en(de),
+    .w_en(1),
     .w_data(rgb_pattern_o_565),
-    .full(),
+    .full(fifo_full),
 
     .r_clk(clk_hdmi),
     .r_rst_n(hdmi_rst_n),
     .r_en(de),
     .r_data(rgb_from_buf_565),
-    .empty()
+    .empty(fifo_empty)
 );
+
+
+// Dither RGB888 pattern output to RGB565 for HDMI line buffer
+// Use pattern generator's self-generated coordinates (no CDC issue)
+wire [15:0] rgb_pattern_o_565;
+wire [15:0] rgb_from_buf_565;
+dither_rgb888_to_565 u_dither (
+    .rgb888(rgb_pattern_o),
+    .x(pg_x),
+    .y(pg_y),
+    .rgb565(rgb_pattern_o_565) 
+);
+
+///////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////// TMDS AND OUTPUT //////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////
 
 // Upscale RGB565 from line buffer to RGB888 for TMDS encoding
 wire [23:0] rgb565_upscale_888 = {

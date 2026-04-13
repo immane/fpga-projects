@@ -78,7 +78,7 @@ Declared in [src/main.v](src/main.v):
 Inputs:
 
 1. `clk` (27 MHz)
-2. `rst_n` (active-low)
+2. `rst_key_n` (active-low key input, internally inverted to `rst_n`)
 
 Debug:
 
@@ -130,7 +130,7 @@ Example Icarus compile command (Windows path style):
 Set-Location d:\Development\FPGA\hdmi_base
 C:\iverilog\bin\iverilog.exe -g2012 -o tb\main_check.out `
   tb\gowin_stub.v `
-  src\gowin_rpll\rpll_hdmi.v src\gowin_clkdiv\clkdiv_hdmi.v src\gowin_rpll\rpll_sys.v `
+  src\gowin_rpll\pll_hdmi.v src\gowin_clkdiv\clkdiv_hdmi.v src\gowin_rpll\rpll_sys.v `
   src\vid_timing_gen.v src\pattern_gen.v src\tmds_encoder.v src\serlizer_10to1.v `
   src\async_fifo.v src\dither_rgb888_to_565.v src\main.v tb\main_smoke_tb.v
 ```
@@ -182,6 +182,29 @@ Remaining practical closure knobs (without architectural rewrite):
 Known non-blocking simulation warnings in current [src/main.v](src/main.v):
 
 1. RGB565 width mismatch around dither/fifo wiring (`24 -> 16` truncation/padding warnings)
+
+## 1080p60 Edge Artifact Notes (April 2026)
+
+Observed symptom:
+
+1. slight speckle/glitch around hard color-band edges at 1080p60 while the frame is otherwise stable
+
+Most likely root cause in current architecture:
+
+1. write-side pixel advancement is flow-controlled by `!fifo_full` (`pattern_gen.ready`), while read-side consumption is fixed to `de`
+2. this creates elastic pixel pacing under FIFO backpressure, which is most visible at sharp transitions (band boundaries)
+
+Relevant locations:
+
+1. write-side backpressure hookup in [src/main.v](src/main.v)
+2. FIFO read gating and pointer movement in [src/async_fifo.v](src/async_fifo.v)
+3. synchronous RAM read behavior in [src/sdp_bram.v](src/sdp_bram.v)
+
+Practical debug checklist:
+
+1. inspect `fifo_full` activity during active video area
+2. correlate edge speckle moments with `fifo_full` pulses
+3. inspect line-start timing (`de` rising edge vs first valid FIFO read data)
 
 ## Planned Integration Direction
 
