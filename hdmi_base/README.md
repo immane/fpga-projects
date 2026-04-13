@@ -16,11 +16,12 @@ Current default configuration in [src/main.v](src/main.v):
 
 1. active timing: 1080p60 parameters enabled (720p block commented out)
 2. PLL profile: `PLL_PROFILE = 2'd3`
-3. TMDS control alignment: `TMDS_ALIGN_LATENCY = 2`
+3. TMDS control alignment: `TMDS_ALIGN_LATENCY = 5` (current build setting)
 4. data path uses RGB888 -> RGB565 -> async FIFO -> RGB888 before TMDS encoding
 5. async FIFO is currently configured for 4096 entries (`ADDRESS_WIDTH = 12`) to cover one full 1080p line with margin
 6. write-side flow control currently uses `almost_full` for the pattern source path
-7. TMDS encoder includes internal pipelining (`de_q/data_q/ctrl_q` and `de_qq/q_m_q/dc_ones_cnt_q`) for timing closure experiments
+7. pattern generator selection: `TEST_PATTERN_MODE` parameter available in `main.v` to choose between uniform color grid and diagnostic pattern
+8. TMDS encoder includes internal pipelining (`de_q/data_q/ctrl_q` and `de_qq/q_m_q/dc_ones_cnt_q`) for timing closure experiments
 
 ## Architecture
 
@@ -194,8 +195,22 @@ Observed symptom:
 Current working theory:
 
 1. the dominant issue appears to be CDC flag timing accuracy near FIFO thresholds rather than a pure TMDS or dither problem
-2. an important bug was found in the FIFO Gray-pointer path: Gray pointers were previously derived from stale binary pointers, adding one extra local-cycle delay before cross-domain synchronization
+2. an important bug was investigated in the FIFO Gray-pointer path: Gray pointers should be derived and synchronized carefully to avoid stale visibility across domains; changes in this area have been considered to improve robustness.
 3. [src/async_fifo.v](src/async_fifo.v) now updates binary and Gray pointers in lockstep, which makes `full`, `empty`, `almost_full`, and `almost_empty` decisions closer to the true FIFO state
+
+Current implementation notes:
+
+1. [src/main.v](src/main.v) uses `almost_full` to throttle the pattern source side
+2. [src/main.v](src/main.v) uses a 4096-entry FIFO for 1080p line buffering margin
+3. [src/async_fifo.v](src/async_fifo.v) currently uses two-stage cross-domain pointer synchronizers in the shipped branch; increasing synchronizer depth was experimented with but not applied in the main branch to avoid delayed visibility effects on threshold logic
+
+Notes on recent fixes/additions (April 2026):
+
+- Added `DITHER_EN` / `PRESERVE_GRAY` to [src/dither_rgb888_to_565.v](src/dither_rgb888_to_565.v) to allow disabling dithering and to force grayscale preservation during quantization (helps reduce false-color lines on grayscale ramps).
+- Introduced a CDC-safe `frame_toggle_hdmi` -> `frame_toggle_sys_sync` toggle mechanism in [src/main.v](src/main.v) to transfer frame boundary events from the HDMI domain into the system domain more robustly (edge-detect after 2-3 sync stages).
+- Added an output mux to force black output when the line-buffer reports empty, ensuring HDMI read timing is never blocked while providing a clean safe-pixel value.
+
+These changes were made to aid debugging of intermittent vertical color lines seen during grayscale ramps and to provide safer CDC behavior without changing the core TMDS read timing.
 
 Current implementation notes:
 

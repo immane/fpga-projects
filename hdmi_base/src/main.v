@@ -30,7 +30,8 @@ function integer get_hdmi_freq;
 endfunction
 localparam HDMI_FREQ = get_hdmi_freq(PLL_PROFILE);
 localparam HDMI_FREQ_5X = HDMI_FREQ * 5;
-localparam integer TMDS_ALIGN_LATENCY = 2; // line-buffer read data is registered once more before TMDS encoding
+localparam integer TMDS_ALIGN_LATENCY = 5; // line-buffer read data is registered once more before TMDS encoding
+localparam integer TEST_PATTERN_MODE = 1;  // 0: uniform color grid, 1: HDMI diagnostic pattern
 
 // HDMI config
 // 1080p
@@ -182,7 +183,8 @@ wire ptrn_ve;
 wire fifo_w_en;
 pattern_gen #(
     .H_ACTIVE(H_ACTIVE),
-    .V_ACTIVE(V_ACTIVE)
+    .V_ACTIVE(V_ACTIVE),
+    .PATTERN_MODE(TEST_PATTERN_MODE)
 ) test_pattern (
     .clk(clk_sys),
     .rst_n(rst_n),
@@ -206,8 +208,6 @@ wire frame_pulse = vsync_sync_sys[1] && !vsync_sync_sys[2];
 // Line buffer to align video data with TMDS encoding timing (1 line buffer depth is sufficient for 720p/1080p)
 wire fifo_full, fifo_empty;
 wire fifo_almost_full, fifo_almost_empty;
-wire fifo_rd_valid;
-assign fifo_rd_valid = de && !fifo_empty;
 async_fifo #(
     .ADDRESS_WIDTH(12), // 4096 entries, enough for one line of 1080p (1920 pixels)
     .DATA_WIDTH(16)
@@ -221,7 +221,7 @@ async_fifo #(
 
     .r_clk(clk_hdmi),
     .r_rst_n(hdmi_rst_n),
-    .r_en(fifo_rd_valid),
+    .r_en(de),
     .r_data(rgb_from_buf_565),
     .empty(fifo_empty),
     .almost_empty(fifo_almost_empty)
@@ -232,7 +232,10 @@ async_fifo #(
 // Use pattern generator's self-generated coordinates (no CDC issue)
 wire [15:0] rgb_pattern_o_565;
 wire [15:0] rgb_from_buf_565;
-dither_rgb888_to_565 u_dither (
+dither_rgb888_to_565 #(
+    .DITHER_EN(1'b1),
+    .PRESERVE_GRAY(1'b0)
+) u_dither (
     .rgb888(rgb_pattern_o),
     .x(pg_x),
     .y(pg_y),
@@ -283,7 +286,7 @@ always @(posedge clk_hdmi or negedge hdmi_rst_n) begin
         hsync_pipe <= {TMDS_ALIGN_LATENCY{1'b0}};
         vsync_pipe <= {TMDS_ALIGN_LATENCY{1'b0}};
     end else begin
-        de_pipe[0] <= fifo_rd_valid;
+        de_pipe[0] <= de;
         hsync_pipe[0] <= hsync;
         vsync_pipe[0] <= vsync;
         for (i = 1; i < TMDS_ALIGN_LATENCY; i = i + 1) begin
