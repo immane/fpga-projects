@@ -14,11 +14,13 @@ Top-level is [src/main.v](src/main.v).
 
 Current default configuration in [src/main.v](src/main.v):
 
-1. active timing: 1080p parameters enabled (720p block commented out)
+1. active timing: 1080p60 parameters enabled (720p block commented out)
 2. PLL profile: `PLL_PROFILE = 2'd3`
 3. TMDS control alignment: `TMDS_ALIGN_LATENCY = 2`
-4. data path includes async FIFO CDC and RGB888 -> RGB565 -> RGB888 conversion path for experiments
-5. TMDS encoder includes internal pipelining (`de_q/data_q/ctrl_q` and `de_qq/q_m_q/dc_ones_cnt_q`) for timing closure experiments
+4. data path uses RGB888 -> RGB565 -> async FIFO -> RGB888 before TMDS encoding
+5. async FIFO is currently configured for 4096 entries (`ADDRESS_WIDTH = 12`) to cover one full 1080p line with margin
+6. write-side flow control currently uses `almost_full` for the pattern source path
+7. TMDS encoder includes internal pipelining (`de_q/data_q/ctrl_q` and `de_qq/q_m_q/dc_ones_cnt_q`) for timing closure experiments
 
 ## Architecture
 
@@ -60,8 +62,8 @@ Core modules:
 
 1. [src/main.v](src/main.v): top-level integration
 2. [src/vid_timing_gen.v](src/vid_timing_gen.v): timing (`hsync`, `vsync`, `de`, `x`, `y`)
-3. [src/pattern_gen.v](src/pattern_gen.v): RGB pattern source
-4. [src/async_fifo.v](src/async_fifo.v): asynchronous FIFO CDC path (current experimental bridge)
+3. [src/pattern_gen.v](src/pattern_gen.v): RGB pattern source with frame-synchronous restart and backpressure input
+4. [src/async_fifo.v](src/async_fifo.v): asynchronous FIFO CDC path with `almost_full`/`almost_empty` status and Gray-pointer lockstep update
 5. [src/dither_rgb888_to_565.v](src/dither_rgb888_to_565.v): RGB888 -> RGB565 conversion
 6. [src/tmds_encoder.v](src/tmds_encoder.v): TMDS channel encoder
 7. [src/serlizer_10to1.v](src/serlizer_10to1.v): OSER10 wrapper
@@ -187,24 +189,37 @@ Known non-blocking simulation warnings in current [src/main.v](src/main.v):
 
 Observed symptom:
 
-1. slight speckle/glitch around hard color-band edges at 1080p60 while the frame is otherwise stable
+1. color-bar output is basically stable at 1080p60, but hard vertical edges may still show faint dotted/speckled neighbor-color artifacts
 
-Most likely root cause in current architecture:
+Current working theory:
 
-1. write-side pixel advancement is flow-controlled by `!fifo_full` (`pattern_gen.ready`), while read-side consumption is fixed to `de`
-2. this creates elastic pixel pacing under FIFO backpressure, which is most visible at sharp transitions (band boundaries)
+1. the dominant issue appears to be CDC flag timing accuracy near FIFO thresholds rather than a pure TMDS or dither problem
+2. an important bug was found in the FIFO Gray-pointer path: Gray pointers were previously derived from stale binary pointers, adding one extra local-cycle delay before cross-domain synchronization
+3. [src/async_fifo.v](src/async_fifo.v) now updates binary and Gray pointers in lockstep, which makes `full`, `empty`, `almost_full`, and `almost_empty` decisions closer to the true FIFO state
+
+Current implementation notes:
+
+1. [src/main.v](src/main.v) uses `almost_full` to throttle the pattern source side
+2. [src/main.v](src/main.v) uses a 4096-entry FIFO for 1080p line buffering margin
+3. [src/async_fifo.v](src/async_fifo.v) keeps two-stage cross-domain pointer synchronizers; no extra synchronizer stage is currently used
+
+Why an extra synchronizer stage was not added:
+
+1. adding another stage would only make remote pointer visibility later
+2. for threshold-driven control (`almost_full` / `almost_empty`), later visibility usually worsens margin rather than improving it
+3. fixing the stale Gray-pointer update is a more direct CDC correction than increasing synchronizer depth
 
 Relevant locations:
 
-1. write-side backpressure hookup in [src/main.v](src/main.v)
-2. FIFO read gating and pointer movement in [src/async_fifo.v](src/async_fifo.v)
-3. synchronous RAM read behavior in [src/sdp_bram.v](src/sdp_bram.v)
+1. [src/main.v](src/main.v)
+2. [src/async_fifo.v](src/async_fifo.v)
+3. [src/sdp_bram.v](src/sdp_bram.v)
 
 Practical debug checklist:
 
-1. inspect `fifo_full` activity during active video area
-2. correlate edge speckle moments with `fifo_full` pulses
-3. inspect line-start timing (`de` rising edge vs first valid FIFO read data)
+1. inspect `almost_full`, `full`, `empty`, and pointer movement around active video
+2. confirm no repeated or frozen source pixels are written while backpressure is asserted
+3. inspect line-start timing (`de` rising edge vs first valid FIFO read data) only after FIFO flag behavior is confirmed stable
 
 ## Planned Integration Direction
 

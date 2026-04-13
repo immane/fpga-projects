@@ -186,7 +186,7 @@ pattern_gen #(
 ) test_pattern (
     .clk(clk_sys),
     .rst_n(rst_n),
-    .ready(!fifo_full), // Backpressure from line buffer FIFO
+    .ready(!fifo_almost_full), // Backpressure from line buffer FIFO
     .frame_pulse(frame_pulse), // Pulse at the start of each frame for synchronization
     .x(pg_x),
     .y(pg_y),
@@ -206,21 +206,25 @@ wire frame_pulse = vsync_sync_sys[1] && !vsync_sync_sys[2];
 // Line buffer to align video data with TMDS encoding timing (1 line buffer depth is sufficient for 720p/1080p)
 wire fifo_full, fifo_empty;
 wire fifo_almost_full, fifo_almost_empty;
+wire fifo_rd_valid;
+assign fifo_rd_valid = de && !fifo_empty;
 async_fifo #(
-    .ADDRESS_WIDTH(11),
+    .ADDRESS_WIDTH(12), // 4096 entries, enough for one line of 1080p (1920 pixels)
     .DATA_WIDTH(16)
 ) hdmi_line_buf_fifo (
     .w_clk(clk_sys),
     .w_rst_n(rst_n),
-    .w_en(1),
+    .w_en(!fifo_almost_full),
     .w_data(rgb_pattern_o_565),
     .full(fifo_full),
+    .almost_full(fifo_almost_full),
 
     .r_clk(clk_hdmi),
     .r_rst_n(hdmi_rst_n),
-    .r_en(de),
+    .r_en(fifo_rd_valid),
     .r_data(rgb_from_buf_565),
-    .empty(fifo_empty)
+    .empty(fifo_empty),
+    .almost_empty(fifo_almost_empty)
 );
 
 
@@ -279,7 +283,7 @@ always @(posedge clk_hdmi or negedge hdmi_rst_n) begin
         hsync_pipe <= {TMDS_ALIGN_LATENCY{1'b0}};
         vsync_pipe <= {TMDS_ALIGN_LATENCY{1'b0}};
     end else begin
-        de_pipe[0] <= de;
+        de_pipe[0] <= fifo_rd_valid;
         hsync_pipe[0] <= hsync;
         vsync_pipe[0] <= vsync;
         for (i = 1; i < TMDS_ALIGN_LATENCY; i = i + 1) begin
