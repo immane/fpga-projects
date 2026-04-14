@@ -69,6 +69,14 @@ Core modules:
 6. [src/tmds_encoder.v](src/tmds_encoder.v): TMDS channel encoder
 7. [src/serlizer_10to1.v](src/serlizer_10to1.v): OSER10 wrapper
 
+## Recent Refactor Notes (April 2026)
+
+- `vid_timing_gen` and the TMDS control alignment pipeline have been moved into a dedicated timing module: [src/timing.v](src/timing.v) (`hdmi_timing`).
+- The TMDS encoding, serialization and output buffers are organized under [src/hdmi_top.v](src/hdmi_top.v) which consumes the aligned timing and the line-buffer output.
+- `main.v` now focuses on clocking, pattern generation and the asynchronous line buffer; this separation helps timing closure and makes CDC boundaries explicit.
+- If you synthesize the project with Gowin tools, ensure `src/timing.v` and `src/hdmi_top.v` are present in the project file list (hdmi_base.gprj / impl/gwsynthesis/hdmi_base.prj).
+
+
 Legacy/support modules (may be reused depending on branch/experiment):
 
 1. [src/vid_line_buf.v](src/vid_line_buf.v)

@@ -10,10 +10,12 @@
         <File path="src/gowin_clkdiv/clkdiv_hdmi.v" type="file.verilog" enable="1"/>
         <File path="src/gowin_rpll/rpll_hdmi.v" type="file.verilog" enable="1"/>
         <File path="src/gowin_rpll/rpll_sys.v" type="file.verilog" enable="1"/>
+        <File path="src/hdmi_top.v" type="file.verilog" enable="1"/>
         <File path="src/main.v" type="file.verilog" enable="1"/>
         <File path="src/pattern_gen.v" type="file.verilog" enable="1"/>
         <File path="src/sdp_bram.v" type="file.verilog" enable="1"/>
         <File path="src/serlizer_10to1.v" type="file.verilog" enable="1"/>
+        <File path="src/timing.v" type="file.verilog" enable="1"/>
         <File path="src/tmds_encoder.v" type="file.verilog" enable="1"/>
         <File path="src/vid_timing_gen.v" type="file.verilog" enable="1"/>
         <File path="src/hdmi_base.cst" type="file.cst" enable="1"/>
