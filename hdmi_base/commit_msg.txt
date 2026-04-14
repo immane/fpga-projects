@@ -1,0 +1,1 @@
+doc: update README with CDC/dither notes; record recent CDC and pattern_gen changes

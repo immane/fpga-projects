@@ -32,7 +32,7 @@ localparam HDMI_FREQ = get_hdmi_freq(PLL_PROFILE);
 localparam HDMI_FREQ_5X = HDMI_FREQ * 5;
 localparam integer TMDS_ALIGN_LATENCY = 5; // line-buffer read data is registered once more before TMDS encoding
 localparam integer TEST_PATTERN_MODE = 1;  // 0: uniform color grid, 1: HDMI diagnostic pattern
-
+ 
 // HDMI config
 // 1080p
 localparam integer 
@@ -188,7 +188,7 @@ pattern_gen #(
 ) test_pattern (
     .clk(clk_sys),
     .rst_n(rst_n),
-    .ready(!fifo_almost_full), // Backpressure from line buffer FIFO
+    .ready(!fifo_full), // Backpressure from line buffer FIFO
     .frame_pulse(frame_pulse), // Pulse at the start of each frame for synchronization
     .x(pg_x),
     .y(pg_y),
@@ -214,7 +214,7 @@ async_fifo #(
 ) hdmi_line_buf_fifo (
     .w_clk(clk_sys),
     .w_rst_n(rst_n),
-    .w_en(!fifo_almost_full),
+    .w_en(!fifo_full),
     .w_data(rgb_pattern_o_565),
     .full(fifo_full),
     .almost_full(fifo_almost_full),

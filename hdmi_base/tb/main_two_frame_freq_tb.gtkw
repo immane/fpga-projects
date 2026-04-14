@@ -1,0 +1,72 @@
+[*]
+[*] GTKWave Analyzer v3.3.100 (w)1999-2019 BSI
+[*] Mon Apr 13 22:40:11 2026
+[*]
+[dumpfile] "d:\Development\FPGA\hdmi_base\tb\main_two_frame_freq_tb.vcd"
+[dumpfile_mtime] "Mon Apr 13 22:22:24 2026"
+[dumpfile_size] 16944296
+[savefile] "D:\Development\FPGA\hdmi_base\tb\main_two_frame_freq_tb.gtkw"
+[timestart] 709620
+[size] 1536 793
+[pos] -113 -113
+*-14.000000 725510 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
+[treeopen] main_two_frame_freq_tb.
+[treeopen] main_two_frame_freq_tb.uut.
+[sst_width] 197
+[signals_width] 181
+[sst_expanded] 1
+[sst_vpaned_height] 255
+@28
+main_two_frame_freq_tb.uut.test_pattern.clk
+@22
+main_two_frame_freq_tb.uut.test_pattern.x_cnt[11:0]
+main_two_frame_freq_tb.uut.test_pattern.x[11:0]
+main_two_frame_freq_tb.uut.test_pattern.y_cnt[11:0]
+main_two_frame_freq_tb.uut.test_pattern.y[11:0]
+@28
+main_two_frame_freq_tb.uut.test_pattern.frame_pulse
+@29
+main_two_frame_freq_tb.uut.test_pattern.ready
+@28
+main_two_frame_freq_tb.uut.test_pattern.ve
+@22
+main_two_frame_freq_tb.uut.test_pattern.rgb_o[23:0]
+@420
+main_two_frame_freq_tb.uut.hdmi_line_buf_fifo.DATA_WIDTH
+main_two_frame_freq_tb.uut.hdmi_line_buf_fifo.ADDRESS_WIDTH
+@28
+main_two_frame_freq_tb.uut.hdmi_line_buf_fifo.w_clk
+main_two_frame_freq_tb.uut.hdmi_line_buf_fifo.w_en
+@22
+main_two_frame_freq_tb.uut.hdmi_line_buf_fifo.w_data[15:0]
+main_two_frame_freq_tb.uut.hdmi_line_buf_fifo.w_ptr[12:0]
+@28
+main_two_frame_freq_tb.uut.hdmi_line_buf_fifo.w_rst_n
+main_two_frame_freq_tb.uut.hdmi_line_buf_fifo.full
+main_two_frame_freq_tb.uut.hdmi_line_buf_fifo.almost_full
+main_two_frame_freq_tb.uut.hdmi_line_buf_fifo.r_clk
+@22
+main_two_frame_freq_tb.uut.hdmi_line_buf_fifo.r_data[15:0]
+@28
+main_two_frame_freq_tb.uut.hdmi_line_buf_fifo.r_en
+@22
+main_two_frame_freq_tb.uut.hdmi_line_buf_fifo.r_ptr[12:0]
+@28
+main_two_frame_freq_tb.uut.hdmi_line_buf_fifo.r_rst_n
+main_two_frame_freq_tb.uut.hdmi_line_buf_fifo.empty
+main_two_frame_freq_tb.uut.hdmi_line_buf_fifo.almost_empty
+main_two_frame_freq_tb.uut.vid_timing.clk_hdmi
+@22
+main_two_frame_freq_tb.uut.vid_timing.x[11:0]
+main_two_frame_freq_tb.uut.vid_timing.y[11:0]
+@28
+main_two_frame_freq_tb.uut.vid_timing.hsync
+main_two_frame_freq_tb.uut.vid_timing.vsync
+main_two_frame_freq_tb.uut.vid_timing.de
+@420
+main_two_frame_freq_tb.uut.vid_timing.H_ACTIVE
+main_two_frame_freq_tb.uut.vid_timing.V_ACTIVE
+main_two_frame_freq_tb.uut.vid_timing.H_TOTAL
+main_two_frame_freq_tb.uut.vid_timing.V_TOTAL
+[pattern_trace] 1
+[pattern_trace] 0

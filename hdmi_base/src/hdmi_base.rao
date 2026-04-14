@@ -1,0 +1,40 @@
+<?xml version="1" encoding="UTF-8"?>
+<GAO_CONFIG>
+    <Version>3.0</Version>
+    <Mode>Lite</Mode>
+    <AoCore_Lite index="0" sample_clock="clk_sys" trig_type="0" capture_amount="1024" implemention="0" input_register_enabled="0" capture_init_data_enabled="0" module_name="main">
+        <SignalList>
+            <Signal capture_enable="true">test_pattern/clk</Signal>
+            <Signal capture_enable="true">test_pattern/ready</Signal>
+            <Signal capture_enable="true">test_pattern/ve</Signal>
+            <Signal capture_enable="true">ptrn_ve</Signal>
+            <Bus capture_enable="true" name="rgb_pattern_o[23:0]">
+                <Signal>rgb_pattern_o[23]</Signal>
+                <Signal>rgb_pattern_o[22]</Signal>
+                <Signal>rgb_pattern_o[21]</Signal>
+                <Signal>rgb_pattern_o[20]</Signal>
+                <Signal>rgb_pattern_o[19]</Signal>
+                <Signal>rgb_pattern_o[18]</Signal>
+                <Signal>rgb_pattern_o[17]</Signal>
+                <Signal>rgb_pattern_o[16]</Signal>
+                <Signal>rgb_pattern_o[15]</Signal>
+                <Signal>rgb_pattern_o[14]</Signal>
+                <Signal>rgb_pattern_o[13]</Signal>
+                <Signal>rgb_pattern_o[12]</Signal>
+                <Signal>rgb_pattern_o[11]</Signal>
+                <Signal>rgb_pattern_o[10]</Signal>
+                <Signal>rgb_pattern_o[9]</Signal>
+                <Signal>rgb_pattern_o[8]</Signal>
+                <Signal>rgb_pattern_o[7]</Signal>
+                <Signal>rgb_pattern_o[6]</Signal>
+                <Signal>rgb_pattern_o[5]</Signal>
+                <Signal>rgb_pattern_o[4]</Signal>
+                <Signal>rgb_pattern_o[3]</Signal>
+                <Signal>rgb_pattern_o[2]</Signal>
+                <Signal>rgb_pattern_o[1]</Signal>
+                <Signal>rgb_pattern_o[0]</Signal>
+            </Bus>
+        </SignalList>
+    </AoCore_Lite>
+    <GAO_ID>0101100101011111</GAO_ID>
+</GAO_CONFIG>

@@ -18,5 +18,6 @@
         <File path="src/vid_timing_gen.v" type="file.verilog" enable="1"/>
         <File path="src/hdmi_base.cst" type="file.cst" enable="1"/>
         <File path="src/hdmi_base.sdc" type="file.sdc" enable="1"/>
+        <File path="src/hdmi_base.rao" type="file.gao" enable="0"/>
     </FileList>
 </Project>
