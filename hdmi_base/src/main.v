@@ -42,9 +42,7 @@ localparam integer
 */
 
 // Derived timing parameters
-localparam integer
-    H_TOTAL = H_ACTIVE + H_FRONT_PORCH + H_SYNC_PULSE + H_BACK_PORCH,
-    V_TOTAL = V_ACTIVE + V_FRONT_PORCH + V_SYNC_PULSE + V_BACK_PORCH;
+// Derived timing parameters (kept in timing module when needed)
 
 // Internal signals
 wire de_hdmi;
@@ -107,7 +105,6 @@ timing #(
 wire [23:0] rgb_ptrn_o;
 wire [11:0] x, y;  // Pattern generator's internal coordinates
 wire ptrn_ve;
-wire fifo_w_en;
 pattern_gen #(
     .H_ACTIVE(H_ACTIVE),
     .V_ACTIVE(V_ACTIVE),
