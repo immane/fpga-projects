@@ -11,7 +11,8 @@ module main(
     output wire tmds_data2_p, output wire tmds_data2_n   // Red
 );
 
-wire rst_n = ~rst_key_n; // Active-low reset from button;
+// Active-low reset from button
+wire rst_n = ~rst_key_n; 
 
 localparam integer TMDS_ALIGN_LATENCY = 5; // line-buffer read data is registered once more before TMDS encoding
 localparam integer TEST_PATTERN_MODE = 1;  // 0: uniform color grid, 1: HDMI diagnostic pattern
@@ -19,29 +20,16 @@ localparam integer TEST_PATTERN_MODE = 1;  // 0: uniform color grid, 1: HDMI dia
 // HDMI config
 // 1080p
 localparam integer 
-    H_ACTIVE = 1920,
-    H_FRONT_PORCH = 88,
-    H_SYNC_PULSE = 44,
-    H_BACK_PORCH = 148,
-    V_ACTIVE = 1080,
-    V_FRONT_PORCH = 4,
-    V_SYNC_PULSE = 5,
-    V_BACK_PORCH = 36;
+    H_ACTIVE = 1920, H_FRONT_PORCH = 88, H_SYNC_PULSE = 44, H_BACK_PORCH = 148,
+    V_ACTIVE = 1080, V_FRONT_PORCH = 4,  V_SYNC_PULSE = 5,  V_BACK_PORCH = 36;
 
-// 720p
 /*
+// 720p
 localparam integer 
-    H_ACTIVE = 1280,
-    H_FRONT_PORCH = 110,
-    H_SYNC_PULSE = 40,
-    H_BACK_PORCH = 220,
-    V_ACTIVE = 720,
-    V_FRONT_PORCH = 5,
-    V_SYNC_PULSE = 5,
-    V_BACK_PORCH = 20;
+    H_ACTIVE = 1280, H_FRONT_PORCH = 110, H_SYNC_PULSE = 40, H_BACK_PORCH = 220,
+    V_ACTIVE = 720,  V_FRONT_PORCH = 5,   V_SYNC_PULSE = 5,  V_BACK_PORCH = 20;
 */
 
-// Derived timing parameters
 // Derived timing parameters (kept in timing module when needed)
 
 // Internal signals
@@ -49,10 +37,8 @@ wire de_hdmi;
 wire vsync_hdmi;
 wire frame_end_hdmi;
 
-reg [31:0] htmi_cnt;
 reg [25:0] led_cnt;
 
-// assign hdmi_rst_n = lock;
 assign hdmi_rst_n = rst_n && lock; // Hold HDMI domain in reset until PLL locks
 
 // LED diagnostic:
