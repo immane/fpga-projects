@@ -1,14 +1,32 @@
 module main(
-    input clk,
-    input rst_key_n,
+    input clk,              // 27MHz input clock
+    input rst_key_n,        // Active-low reset button
+
+    // Diagnostic LEDs (e.g. PLL lock status, frame counter MSB)
     output wire [5:0]led,
 
     // HDMI output signals
-    output wire tmds_clk_p,
-    output wire tmds_clk_n,
-    output wire tmds_data0_p, output wire tmds_data0_n,  // Blue
-    output wire tmds_data1_p, output wire tmds_data1_n,  // Green
-    output wire tmds_data2_p, output wire tmds_data2_n   // Red
+    output wire tmds_clk_p, 
+    output wire tmds_clk_n, // TMDS clock pair
+    output wire tmds_data0_p, 
+    output wire tmds_data0_n,  // Blue
+    output wire tmds_data1_p, 
+    output wire tmds_data1_n,  // Green
+    output wire tmds_data2_p, 
+    output wire tmds_data2_n,  // Red
+
+    // SDRAM physical interface
+    // "Magic" port names that the gowin compiler connects to the on-chip SDRAM
+    output O_sdram_clk,
+    output O_sdram_cke,
+    output O_sdram_cs_n,            // chip select
+    output O_sdram_cas_n,           // columns address select
+    output O_sdram_ras_n,           // row address select
+    output O_sdram_wen_n,           // write enable
+    inout [31:0] IO_sdram_dq,       // 32 bit bidirectional data bus
+    output [10:0] O_sdram_addr,     // 11 bit multiplexed address bus
+    output [1:0] O_sdram_ba,        // two banks
+    output [3:0] O_sdram_dqm        // 32/4
 );
 
 // Active-low reset from button
@@ -30,20 +48,11 @@ localparam integer
     V_ACTIVE = 720,  V_FRONT_PORCH = 5,   V_SYNC_PULSE = 5,  V_BACK_PORCH = 20;
 */
 
-// Derived timing parameters (kept in timing module when needed)
-
-// Internal signals
-wire de_hdmi;
-wire vsync_hdmi;
-wire frame_end_hdmi;
-
-reg [25:0] led_cnt;
-
-assign hdmi_rst_n = rst_n && lock; // Hold HDMI domain in reset until PLL locks
 
 // LED diagnostic:
 // - PLL unlocked: fast blink (input clock domain alive)
 // - PLL locked:   slow blink (HDMI domain active)
+reg [25:0] led_cnt;
 always @(posedge clk) begin
     led_cnt <= led_cnt + 26'd1;
 end
@@ -69,6 +78,8 @@ wire clk_hdmi_5x;
 wire hdmi_rst_n;
 wire lock;
 wire lock_sys;
+
+assign hdmi_rst_n = rst_n && lock; // Hold HDMI domain in reset until PLL locks
 
 timing #(
     .PLL_PROFILE(2'd3) // 1080p60
@@ -106,7 +117,9 @@ pattern_gen #(
     .ve(ptrn_ve)
 );
 
+
 // Vsync to reset pattern generator at the start of each frame 
+wire vsync_hdmi;
 reg [2:0] vsync_sys;
 always @(posedge clk_sys or negedge rst_n) begin
     if (!rst_n) vsync_sys <= 3'b000;
@@ -116,6 +129,7 @@ wire frame_pulse = vsync_sys[1] && !vsync_sys[2];
 
 
 // Line buffer to align video data with TMDS encoding timing (1 line buffer depth is sufficient for 720p/1080p)
+wire de_hdmi;
 wire fifo_full, fifo_empty;
 wire fifo_almost_full, fifo_almost_empty;
 async_fifo #(
@@ -153,6 +167,7 @@ dither_rgb888_to_565 #(
 );
 
 // HDMI output module (video timing generation + TMDS encoding)
+wire frame_end_hdmi;
 hdmi_top #(
     .H_ACTIVE(H_ACTIVE),
     .H_FRONT_PORCH(H_FRONT_PORCH),
@@ -181,4 +196,61 @@ hdmi_top #(
     .tmds_data2_n(tmds_data2_n)
 );
 
+// SDRAM controller inter-module wires (use sdrc_* naming to match IP signals)
+wire        sdrc_init_done;
+wire        sdrc_cmd_ack;
+wire [2:0]  sdrc_cmd;
+wire        sdrc_cmd_en;
+wire [20:0] sdrc_addr;
+wire [31:0] sdrc_wdata;
+wire [7:0]  sdrc_data_len;
+wire [31:0] sdrc_rdata;
+
+// SDRAM user controller (write/read test sequencer)
+sdram_user_ctrl u_sdram_user_ctrl (
+    .clk        (clk_sys),
+    .rst_n      (rst_n),
+    .init_done  (sdrc_init_done),
+    .cmd_ack    (sdrc_cmd_ack),
+    .pix_valid  (ptrn_ve),
+    .pix_data   (rgb_ptrn_out_565),
+    .user_cmd   (sdrc_cmd),
+    .user_cmd_en(sdrc_cmd_en),
+    .user_addr  (sdrc_addr),
+    .user_data  (sdrc_wdata),
+    .user_len   (sdrc_data_len),
+    .data_valid (sdrc_cmd_ack),  // O_sdrc_data_valid not exposed by IP; approximate with cmd_ack
+    .read_data  (sdrc_rdata)
+);
+
+// SDRAM controller IP
+SDRAM_Controller_HS_Top u_sdram_ctrl (
+    .I_sdrc_rst_n         (rst_n),
+    .I_sdrc_clk           (clk_sys),
+    .I_sdram_clk          (clk_sys_90),
+    .I_sdrc_cmd_en        (sdrc_cmd_en),
+    .I_sdrc_cmd           (sdrc_cmd),
+    .I_sdrc_precharge_ctrl(1'b0),
+    .I_sdram_power_down   (1'b0),
+    .I_sdram_selfrefresh  (1'b0),
+    .I_sdrc_addr          (sdrc_addr),
+    .I_sdrc_dqm           (4'b0000),
+    .I_sdrc_data          (sdrc_wdata),
+    .I_sdrc_data_len      (sdrc_data_len),
+    .O_sdram_clk          (O_sdram_clk),
+    .O_sdram_cke          (O_sdram_cke),
+    .O_sdram_cs_n         (O_sdram_cs_n),
+    .O_sdram_cas_n        (O_sdram_cas_n),
+    .O_sdram_ras_n        (O_sdram_ras_n),
+    .O_sdram_wen_n        (O_sdram_wen_n),
+    .O_sdram_dqm          (O_sdram_dqm),
+    .O_sdram_addr         (O_sdram_addr),
+    .O_sdram_ba           (O_sdram_ba),
+    .O_sdrc_data          (sdrc_rdata),
+    .O_sdrc_init_done     (sdrc_init_done),
+    .O_sdrc_cmd_ack       (sdrc_cmd_ack),
+    .IO_sdram_dq          (IO_sdram_dq)
+);
+
 endmodule
+
