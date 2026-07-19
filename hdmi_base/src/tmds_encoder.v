@@ -65,6 +65,8 @@ always @(posedge clk_hdmi or negedge rst_n) begin
 end
 
 // Stage 2: DC balance decision (pure combinational)
+reg signed [4:0] disparity;        // Current running disparity
+reg signed [4:0] disparity_next;   // Next disparity value (pipelined)
 wire dc_invert_comb;
 assign dc_invert_comb = 
     (!de_qq) ? 1'b0 :
@@ -72,9 +74,6 @@ assign dc_invert_comb =
     (disparity > 0) ? (dc_ones_cnt_q > 4) : (dc_ones_cnt_q < 4);
 
 // Stage 3: Disparity pipeline + final output
-reg signed [4:0] disparity;        // Current running disparity
-reg signed [4:0] disparity_next;   // Next disparity value (pipelined)
-
 reg [9:0] tmds_next;
 
 always @(posedge clk_hdmi or negedge rst_n) begin

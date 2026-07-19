@@ -95,3 +95,47 @@ assign O = I;
 assign OB = ~I;
 
 endmodule
+
+module SDRAM_Controller_HS_Top (
+    input I_sdrc_rst_n,
+    input I_sdrc_clk,
+    input I_sdram_clk,
+    input I_sdrc_cmd_en,
+    input [2:0] I_sdrc_cmd,
+    input I_sdrc_precharge_ctrl,
+    input I_sdram_power_down,
+    input I_sdram_selfrefresh,
+    input [20:0] I_sdrc_addr,
+    input [3:0] I_sdrc_dqm,
+    input [31:0] I_sdrc_data,
+    input [7:0] I_sdrc_data_len,
+    output O_sdram_clk,
+    output O_sdram_cke,
+    output O_sdram_cs_n,
+    output O_sdram_cas_n,
+    output O_sdram_ras_n,
+    output O_sdram_wen_n,
+    output [3:0] O_sdram_dqm,
+    output [10:0] O_sdram_addr,
+    output [1:0] O_sdram_ba,
+    output [31:0] O_sdrc_data,
+    output O_sdrc_init_done,
+    output O_sdrc_cmd_ack,
+    inout [31:0] IO_sdram_dq
+);
+
+assign O_sdram_clk = I_sdram_clk;
+assign O_sdram_cke = 1'b1;
+assign O_sdram_cs_n = 1'b0;
+assign O_sdram_cas_n = 1'b1;
+assign O_sdram_ras_n = 1'b1;
+assign O_sdram_wen_n = 1'b1;
+assign O_sdram_dqm = 4'b0000;
+assign O_sdram_addr = 11'd0;
+assign O_sdram_ba = 2'b00;
+assign O_sdrc_data = 32'd0;
+assign O_sdrc_init_done = I_sdrc_rst_n;
+assign O_sdrc_cmd_ack = 1'b0;
+assign IO_sdram_dq = 32'bz;
+
+endmodule

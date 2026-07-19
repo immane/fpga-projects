@@ -34,6 +34,17 @@ wire rst_n = ~rst_key_n;
 
 localparam integer TMDS_ALIGN_LATENCY = 5; // line-buffer read data is registered once more before TMDS encoding
 localparam integer TEST_PATTERN_MODE = 1;  // 0: uniform color grid, 1: HDMI diagnostic pattern
+// Keep the known-good direct video path as the default until SDRAM is verified on hardware.
+localparam integer USE_SDRAM_VIDEO_PATH = 0;
+wire lock;
+wire frame_pulse;
+wire clk_sys;    // ~166.5MHz
+wire clk_sys_90; // ~166.5MHz with 90-degree phase shift
+wire clk_cpu;    // ~83.25MHz
+wire clk_hdmi;
+wire clk_hdmi_5x;
+wire hdmi_rst_n;
+wire lock_sys;
  
 // HDMI config
 // 1080p
@@ -70,15 +81,6 @@ assign led[0] = rst_cnt[24];
 // Generate System clock (~166.5MHz) and CPU clock (~83.25MHz) from 27MHz using rPLL_SYS
 // Generate HDMI clock (e.g. 148.5MHz for 1080p60) from the input 27MHz using rPLL_HDMI
 // Generate HDMI clock using PLL and clock divider
-wire clk_sys;    // ~166.5MHz
-wire clk_sys_90; // ~166.5MHz with 90-degree phase shift
-wire clk_cpu;    // ~83.25MHz
-wire clk_hdmi;
-wire clk_hdmi_5x;
-wire hdmi_rst_n;
-wire lock;
-wire lock_sys;
-
 assign hdmi_rst_n = rst_n && lock; // Hold HDMI domain in reset until PLL locks
 
 timing #(
@@ -105,6 +107,12 @@ wire ptrn_ve;
 wire        sdram_pix_ready;
 wire        sdram_pix_valid;
 wire [15:0] sdram_pix_data;
+wire fifo_full, fifo_empty;
+wire fifo_almost_full, fifo_almost_empty;
+wire [15:0] rgb_ptrn_out_565;
+wire [15:0] rgb_from_buf_565;
+wire        pattern_ready = USE_SDRAM_VIDEO_PATH ? sdram_pix_ready :
+                            (!fifo_almost_full && !fifo_full);
 pattern_gen #(
     .H_ACTIVE(H_ACTIVE),
     .V_ACTIVE(V_ACTIVE),
@@ -112,7 +120,7 @@ pattern_gen #(
 ) test_pattern (
     .clk(clk_sys),
     .rst_n(rst_n),
-    .ready(sdram_pix_ready), // Backpressure from SDRAM burst buffers
+    .ready(pattern_ready),
     .frame_pulse(frame_pulse), // Pulse at the start of each frame for synchronization
     .x(x),
     .y(y),
@@ -128,21 +136,21 @@ always @(posedge clk_sys or negedge rst_n) begin
     if (!rst_n) vsync_sys <= 3'b000;
     else vsync_sys <= {vsync_sys[1:0], vsync_hdmi};
 end
-wire frame_pulse = vsync_sys[1] && !vsync_sys[2];
+assign frame_pulse = vsync_sys[1] && !vsync_sys[2];
 
 
 // Line buffer to align video data with TMDS encoding timing (1 line buffer depth is sufficient for 720p/1080p)
 wire de_hdmi;
-wire fifo_full, fifo_empty;
-wire fifo_almost_full, fifo_almost_empty;
+wire line_buf_write = USE_SDRAM_VIDEO_PATH ? sdram_pix_valid : ptrn_ve;
+wire [15:0] line_buf_data = USE_SDRAM_VIDEO_PATH ? sdram_pix_data : rgb_ptrn_out_565;
 async_fifo #(
     .ADDRESS_WIDTH(12), // 4096 entries, enough for one line of 1080p (1920 pixels)
     .DATA_WIDTH(16)
 ) hdmi_line_buf_fifo (
     .w_clk(clk_sys),
     .w_rst_n(rst_n),
-    .w_en(sdram_pix_valid && !fifo_almost_full && !fifo_full),
-    .w_data(sdram_pix_data),
+    .w_en(line_buf_write && !fifo_almost_full && !fifo_full),
+    .w_data(line_buf_data),
     .full(fifo_full),
     .almost_full(fifo_almost_full),
 
@@ -157,8 +165,7 @@ async_fifo #(
 
 // Dither RGB888 pattern output to RGB565 for HDMI line buffer
 // Use pattern generator's self-generated coordinates (no CDC issue)
-wire [15:0] rgb_ptrn_out_565;
-wire [15:0] rgb_from_buf_565;
+wire [15:0] rgb_to_hdmi_565 = fifo_empty ? 16'h0000 : rgb_from_buf_565;
 dither_rgb888_to_565 #(
     .DITHER_EN(1'b1),
     .PRESERVE_GRAY(1'b0)
@@ -185,7 +192,7 @@ hdmi_top #(
     .clk_hdmi(clk_hdmi),
     .clk_hdmi_5x(clk_hdmi_5x),
     .rst_n(hdmi_rst_n),
-    .rgb565_i(rgb_from_buf_565),
+    .rgb565_i(rgb_to_hdmi_565),
     .de_o(de_hdmi),
     .vsync_o(vsync_hdmi),
     .frame_end_o(frame_end_hdmi),
@@ -209,25 +216,37 @@ wire [31:0] sdrc_wdata;
 wire [7:0]  sdrc_data_len;
 wire [31:0] sdrc_rdata;
 
-// Pattern pixels are written to SDRAM and read back before entering the line buffer.
-sdram_user_ctrl u_sdram_user_ctrl (
-    .clk        (clk_sys),
-    .rst_n      (rst_n),
-    .init_done  (sdrc_init_done),
-    .cmd_ack    (sdrc_cmd_ack),
-    .pix_valid  (ptrn_ve),
-    .pix_data   (rgb_ptrn_out_565),
-    .pix_ready  (sdram_pix_ready),
-    .out_valid  (sdram_pix_valid),
-    .out_data   (sdram_pix_data),
-    .out_ready  (!fifo_almost_full && !fifo_full),
-    .user_cmd   (sdrc_cmd),
-    .user_cmd_en(sdrc_cmd_en),
-    .user_addr  (sdrc_addr),
-    .user_data  (sdrc_wdata),
-    .user_len   (sdrc_data_len),
-    .read_data  (sdrc_rdata)
-);
+generate
+    if (USE_SDRAM_VIDEO_PATH) begin : gen_sdram_video
+        sdram_user_ctrl u_sdram_user_ctrl (
+            .clk        (clk_sys),
+            .rst_n      (rst_n),
+            .init_done  (sdrc_init_done),
+            .cmd_ack    (sdrc_cmd_ack),
+            .pix_valid  (ptrn_ve),
+            .pix_data   (rgb_ptrn_out_565),
+            .pix_ready  (sdram_pix_ready),
+            .out_valid  (sdram_pix_valid),
+            .out_data   (sdram_pix_data),
+            .out_ready  (!fifo_almost_full && !fifo_full),
+            .user_cmd   (sdrc_cmd),
+            .user_cmd_en(sdrc_cmd_en),
+            .user_addr  (sdrc_addr),
+            .user_data  (sdrc_wdata),
+            .user_len   (sdrc_data_len),
+            .read_data  (sdrc_rdata)
+        );
+    end else begin : gen_direct_video
+        assign sdram_pix_ready = 1'b0;
+        assign sdram_pix_valid = 1'b0;
+        assign sdram_pix_data = 16'h0000;
+        assign sdrc_cmd = 3'b111;
+        assign sdrc_cmd_en = 1'b0;
+        assign sdrc_addr = 21'd0;
+        assign sdrc_wdata = 32'd0;
+        assign sdrc_data_len = 8'd0;
+    end
+endgenerate
 
 // SDRAM controller IP
 SDRAM_Controller_HS_Top u_sdram_ctrl (
@@ -236,7 +255,7 @@ SDRAM_Controller_HS_Top u_sdram_ctrl (
     .I_sdram_clk          (clk_sys_90),
     .I_sdrc_cmd_en        (sdrc_cmd_en),
     .I_sdrc_cmd           (sdrc_cmd),
-    .I_sdrc_precharge_ctrl(1'b0),
+    .I_sdrc_precharge_ctrl(1'b1),
     .I_sdram_power_down   (1'b0),
     .I_sdram_selfrefresh  (1'b0),
     .I_sdrc_addr          (sdrc_addr),
