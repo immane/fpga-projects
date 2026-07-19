@@ -102,9 +102,6 @@ timing #(
 wire [23:0] rgb_ptrn_o;
 wire [11:0] x, y;  // Pattern generator's internal coordinates
 wire ptrn_ve;
-wire        sdram_pix_ready;
-wire        sdram_pix_valid;
-wire [15:0] sdram_pix_data;
 pattern_gen #(
     .H_ACTIVE(H_ACTIVE),
     .V_ACTIVE(V_ACTIVE),
@@ -112,7 +109,7 @@ pattern_gen #(
 ) test_pattern (
     .clk(clk_sys),
     .rst_n(rst_n),
-    .ready(sdram_pix_ready), // Backpressure from SDRAM burst buffers
+    .ready(!fifo_full), // Backpressure from line buffer FIFO
     .frame_pulse(frame_pulse), // Pulse at the start of each frame for synchronization
     .x(x),
     .y(y),
@@ -141,8 +138,8 @@ async_fifo #(
 ) hdmi_line_buf_fifo (
     .w_clk(clk_sys),
     .w_rst_n(rst_n),
-    .w_en(sdram_pix_valid && !fifo_almost_full && !fifo_full),
-    .w_data(sdram_pix_data),
+    .w_en(!fifo_full),
+    .w_data(rgb_ptrn_out_565),
     .full(fifo_full),
     .almost_full(fifo_almost_full),
 
@@ -209,7 +206,7 @@ wire [31:0] sdrc_wdata;
 wire [7:0]  sdrc_data_len;
 wire [31:0] sdrc_rdata;
 
-// Pattern pixels are written to SDRAM and read back before entering the line buffer.
+// SDRAM user controller (write/read test sequencer)
 sdram_user_ctrl u_sdram_user_ctrl (
     .clk        (clk_sys),
     .rst_n      (rst_n),
@@ -217,15 +214,12 @@ sdram_user_ctrl u_sdram_user_ctrl (
     .cmd_ack    (sdrc_cmd_ack),
     .pix_valid  (ptrn_ve),
     .pix_data   (rgb_ptrn_out_565),
-    .pix_ready  (sdram_pix_ready),
-    .out_valid  (sdram_pix_valid),
-    .out_data   (sdram_pix_data),
-    .out_ready  (!fifo_almost_full && !fifo_full),
     .user_cmd   (sdrc_cmd),
     .user_cmd_en(sdrc_cmd_en),
     .user_addr  (sdrc_addr),
     .user_data  (sdrc_wdata),
     .user_len   (sdrc_data_len),
+    .data_valid (sdrc_cmd_ack),  // O_sdrc_data_valid not exposed by IP; approximate with cmd_ack
     .read_data  (sdrc_rdata)
 );
 
@@ -259,3 +253,4 @@ SDRAM_Controller_HS_Top u_sdram_ctrl (
 );
 
 endmodule
+
