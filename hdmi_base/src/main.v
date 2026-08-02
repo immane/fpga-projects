@@ -13,20 +13,7 @@ module main(
     output wire tmds_data1_p, 
     output wire tmds_data1_n,  // Green
     output wire tmds_data2_p, 
-    output wire tmds_data2_n,  // Red
-
-    // SDRAM physical interface
-    // "Magic" port names that the gowin compiler connects to the on-chip SDRAM
-    output O_sdram_clk,
-    output O_sdram_cke,
-    output O_sdram_cs_n,            // chip select
-    output O_sdram_cas_n,           // columns address select
-    output O_sdram_ras_n,           // row address select
-    output O_sdram_wen_n,           // write enable
-    inout [31:0] IO_sdram_dq,       // 32 bit bidirectional data bus
-    output [10:0] O_sdram_addr,     // 11 bit multiplexed address bus
-    output [1:0] O_sdram_ba,        // two banks
-    output [3:0] O_sdram_dqm        // 32/4
+    output wire tmds_data2_n   // Red
 );
 
 // Active-low reset from button
@@ -58,20 +45,6 @@ always @(posedge clk) begin
 end
 assign led[5] = (!lock) ? led_cnt[22] : led_cnt[24];
 
-// ---- SDRAM bring-up LEDs (board-level diagnostics) ----
-// led[1] = SDRAM init complete      (O_sdrc_init_done)
-// led[2] = SDRAM read-back mismatch (sticky, self-test error)
-// led[3] = SDRAM self-test loop running (slow blink while bursts are checked)
-// led[4] = system PLL locked (clk_sys alive)
-assign led[1] = sdrc_init_done;
-assign led[2] = selftest_err;
-assign led[4] = lock_sys;
-reg [25:0] st_cnt;
-always @(posedge clk_sys or negedge rst_n) begin
-    if (!rst_n) st_cnt <= 26'd0;
-    else if (selftest_done) st_cnt <= st_cnt + 26'd1;
-end
-assign led[3] = st_cnt[22];
 
 // Frame counter for debugging
 reg [24:0] rst_cnt = 0;
@@ -211,94 +184,4 @@ hdmi_top #(
     .tmds_data2_n(tmds_data2_n)
 );
 
-// SDRAM controller inter-module wires (use sdrc_* naming to match IP signals)
-wire        sdrc_init_done;
-wire        sdrc_cmd_ack;
-wire [2:0]  sdrc_cmd;
-wire        sdrc_cmd_en;
-wire [20:0] sdrc_addr;
-wire [31:0] sdrc_wdata;
-wire [7:0]  sdrc_data_len;
-wire [31:0] sdrc_rdata;
-wire [15:0] rd_pix;        // SDRAM read-back pixel -> line-buffer FIFO (unused in selftest)
-wire        rd_pix_valid;  // FIFO write strobe (clk_sys) (unused in selftest)
-wire        wr_ready;      // SDRAM write path can accept a pixel (unused in selftest)
-wire        selftest_done; // SDRAM self-test burst checked (loop running)
-wire        selftest_err;  // sticky: SDRAM read-back mismatch
-wire [15:0] selftest_err_cnt;
-
-// SDRAM user controller: board bring-up SELF-TEST. SELFTEST_EN=1 makes it
-// write KNOWN data (independent of the pattern) to SDRAM, read it back and
-// compare, reporting on led[1..3]. The HDMI display runs directly from the
-// pattern generator so SDRAM bring-up is isolated from display issues.
-// Once selftest_err stays 0 and init_done is high, SDRAM write/read works;
-// then switch RD_OUT_EN=1 / SELFTEST_EN=0 to route video through SDRAM.
-sdram_user_ctrl #(
-    .BURST_SIZE(4),
-    .RD_OUT_EN(0),
-    .SELFTEST_EN(1)
-) u_sdram_user_ctrl (
-    .clk        (clk_sys),
-    .rst_n      (rst_n),
-    .init_done  (sdrc_init_done),
-    .cmd_ack    (sdrc_cmd_ack),
-    .pix_valid  (ptrn_ve),
-    .pix_data   (rgb_ptrn_out_565),
-    .user_cmd   (sdrc_cmd),
-    .user_cmd_en(sdrc_cmd_en),
-    .user_addr  (sdrc_addr),
-    .user_data  (sdrc_wdata),
-    .user_len   (sdrc_data_len),
-    .read_data  (sdrc_rdata),
-    .rd_pix     (rd_pix),
-    .rd_pix_valid(rd_pix_valid),
-    .rd_ready   (1'b1),
-    .wr_ready   (wr_ready),
-    .selftest_done   (selftest_done),
-    .selftest_err    (selftest_err),
-    .selftest_err_cnt(selftest_err_cnt)
-);
-
-// SDRAM controller reset: hold in reset until the sys PLL is locked, then
-// release through a 2-flop synchronizer, so the controller never samples a
-// ramping/unstable clock during power-up init (a common cause of O_sdrc_init_done
-// never asserting).
-reg [1:0] sdrc_rst_sync;
-always @(posedge clk_sys or negedge rst_n) begin
-    if (!rst_n)         sdrc_rst_sync <= 2'b00;
-    else if (!lock_sys) sdrc_rst_sync <= 2'b00;
-    else                sdrc_rst_sync <= {sdrc_rst_sync[0], 1'b1};
-end
-wire sdrc_rst_n = sdrc_rst_sync[1];
-
-// SDRAM controller IP
-SDRAM_Controller_HS_Top u_sdram_ctrl (
-    .I_sdrc_rst_n         (sdrc_rst_n),
-    .I_sdrc_clk           (clk_sys),
-    .I_sdram_clk          (clk_sys_90),
-    .I_sdrc_cmd_en        (sdrc_cmd_en),
-    .I_sdrc_cmd           (sdrc_cmd),
-    .I_sdrc_precharge_ctrl(1'b0),
-    .I_sdram_power_down   (1'b0),
-    .I_sdram_selfrefresh  (1'b0),
-    .I_sdrc_addr          (sdrc_addr),
-    .I_sdrc_dqm           (4'b0000),
-    .I_sdrc_data          (sdrc_wdata),
-    .I_sdrc_data_len      (sdrc_data_len),
-    .O_sdram_clk          (O_sdram_clk),
-    .O_sdram_cke          (O_sdram_cke),
-    .O_sdram_cs_n         (O_sdram_cs_n),
-    .O_sdram_cas_n        (O_sdram_cas_n),
-    .O_sdram_ras_n        (O_sdram_ras_n),
-    .O_sdram_wen_n        (O_sdram_wen_n),
-    .O_sdram_dqm          (O_sdram_dqm),
-    .O_sdram_addr         (O_sdram_addr),
-    .O_sdram_ba           (O_sdram_ba),
-    .O_sdrc_data          (sdrc_rdata),
-    .O_sdrc_init_done     (sdrc_init_done),
-    .O_sdrc_cmd_ack       (sdrc_cmd_ack),
-    .IO_sdram_dq          (IO_sdram_dq)
-);
-
 endmodule
-
