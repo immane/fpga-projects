@@ -100,8 +100,12 @@ module async_fifo #(
         end
     end
 
-    // Full when next write pointer equals read pointer with MSB inverted (Gray code)
-    wire full_val = (w_ptr_gray_next == {~r_ptr_gray_sync[ADDRESS_WIDTH:ADDRESS_WIDTH-1], r_ptr_gray_sync[ADDRESS_WIDTH-2:0]});
+    // Full when write pointer equals read pointer with MSB inverted (Gray code).
+    // Compare the REGISTERED w_ptr_gray (not next) so the w_en -> w_ptr increment
+    // chain is not on the full critical path. Full is 1 cycle late; safe here
+    // because the FIFO essentially never fills (SDRAM stream rate << drain rate)
+    // and overflow writes are dropped via (w_en && !full).
+    wire full_val = (w_ptr_gray == {~r_ptr_gray_sync[ADDRESS_WIDTH:ADDRESS_WIDTH-1], r_ptr_gray_sync[ADDRESS_WIDTH-2:0]});
     always @(posedge w_clk or negedge w_rst_n) begin
         if(!w_rst_n) full <= 1'b0;
         else         full <= full_val;

@@ -1,7 +1,12 @@
-// Testbench for sdram_user_ctrl read-back-output mode (RD_OUT_EN=1):
-// pattern pixels (gated by wr_ready => lossless write) are written to SDRAM,
-// read back, and streamed out on rd_pix. Checks the output pixel sequence
-// exactly matches the written pixel sequence.
+// Testbench for sdram_user_ctrl ROLLING FRAME BUFFER mode:
+// pattern pixels (gated by wr_ready => lossless write) are written into a
+// static frame region; after the first full frame is stored (fb_ready), a
+// read pointer sweeps the same region and the read-back stream must match
+// the (static) written pattern exactly.
+//
+// NOTE: pix_valid/pix_data are REGISTERED one cycle after wr_ready, exactly
+// like the real pattern_gen (its `ve <= ready`), so the backpressure
+// handshake (including the "last word fill" early-deassert) is exercised.
 `timescale 1ns/1ps
 module sdram_user_ctrl_tb;
     reg         clk      = 1'b0;
@@ -10,6 +15,7 @@ module sdram_user_ctrl_tb;
 
     wire        init_done, cmd_ack;
     wire [31:0] read_data;
+    wire        fb_ready;
 
     wire [2:0]  user_cmd;
     wire        user_cmd_en;
@@ -22,10 +28,14 @@ module sdram_user_ctrl_tb;
     wire        pix_valid;
     wire [15:0] pix_data;
 
-    // UUT: burst write + readback to FIFO
+    // Frame region: 1024 words = 2048 pixels (small for fast simulation)
+    localparam integer FB_WORDS = 1024;
+    localparam integer FB_PIX   = 2 * FB_WORDS;
+
+    // UUT: rolling frame buffer (BURST_SIZE=16 for TB speed)
     sdram_user_ctrl #(
         .BURST_SIZE(16),
-        .RD_OUT_EN (1)
+        .FB_WORDS  (FB_WORDS)
     ) uut (
         .clk         (clk),
         .rst_n       (rst_n),
@@ -42,7 +52,11 @@ module sdram_user_ctrl_tb;
         .rd_pix      (rd_pix),
         .rd_pix_valid(rd_pix_valid),
         .rd_ready    (rd_ready),
-        .wr_ready    (wr_ready)
+        .wr_ready    (wr_ready),
+        .fb_ready    (fb_ready),
+        .selftest_done   (),
+        .selftest_err    (),
+        .selftest_err_cnt()
     );
 
     // SDRAM HS controller behavioral model
@@ -61,56 +75,55 @@ module sdram_user_ctrl_tb;
 
     always #3 clk = ~clk;
 
-    // pattern source: only advance a pixel when the write path accepts it
+    // Static pattern source modeled like pattern_gen: pix_valid/pix_data are
+    // registered one cycle after wr_ready; the value = position (wraps every
+    // frame, so the value at any frame address is constant across frames).
     reg [15:0] px = 16'd0;
+    reg        pix_valid_q = 1'b0;
+    reg [15:0] pix_data_q  = 16'd0;
     always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) px <= 16'd0;
-        else if (wr_ready) px <= px + 16'd1;
-    end
-    assign pix_valid = wr_ready;
-    assign pix_data  = px;
-
-    // reference queue of written pixels, checked against rd_pix
-    reg [15:0] refq [0:8191];
-    reg [31:0] ref_wr = 0, ref_rd = 0;
-    integer    err = 0;
-    integer    rd_count = 0;
-    always @(posedge clk) begin
-        if (wr_ready) begin
-            refq[ref_wr[12:0]] <= pix_data;
-            ref_wr <= ref_wr + 1;
-        end
-        if (rd_pix_valid) begin
-            rd_count = rd_count + 1;
-            if (rd_pix !== refq[ref_rd[12:0]]) begin
-                err = err + 1;
-                if (err < 5)
-                    $display("MISMATCH t=%0t out=%h expected=%h", $time, rd_pix, refq[ref_rd[12:0]]);
+        if (!rst_n) begin
+            px          <= 16'd0;
+            pix_valid_q <= 1'b0;
+            pix_data_q  <= 16'd0;
+        end else begin
+            pix_valid_q <= wr_ready;
+            if (wr_ready) begin
+                pix_data_q <= px;                 // static: value = position
+                px         <= (px == FB_PIX - 1) ? 16'd0 : px + 16'd1;
             end
-            ref_rd <= ref_rd + 1;
         end
     end
+    assign pix_valid = pix_valid_q;
+    assign pix_data  = pix_data_q;
 
-    // FSM entry counters for debugging
-    reg [3:0] prev_state = 0;
-    integer  pack_entries = 0, rout_entries = 0;
+    // Reference: expected read-back pixel = position (mod frame) since the
+    // pattern is static; the read pointer sweeps 0..FB_PIX-1 in order.
+    integer rd_count = 0;
+    integer err      = 0;
     always @(posedge clk) begin
-        prev_state <= uut.state;
-        if (uut.state == 4'd1 && prev_state != 4'd1)  pack_entries = pack_entries + 1;
-        if (uut.state == 4'd13 && prev_state != 4'd13) rout_entries = rout_entries + 1;
+        if (rd_pix_valid) begin
+            if (rd_pix !== (rd_count % FB_PIX)) begin
+                err = err + 1;
+                if (err < 8)
+                    $display("MISMATCH t=%0t out=%h exp=%h r_addr=%h rd_out=%0d rd_wptr=%0d",
+                             $time, rd_pix, rd_count % FB_PIX,
+                             uut.r_addr, uut.rd_out_ptr, uut.rd_wptr);
+            end
+            rd_count = rd_count + 1;
+        end
     end
 
     initial begin
         rst_n = 1'b0;
         repeat (4) @(posedge clk);
         rst_n = 1'b1;
-        repeat (300000) @(posedge clk);
+        repeat (80000) @(posedge clk);
 
-        $display("RESULT: written=%0d output=%0d mismatches=%0d pack_entries=%0d rout_entries=%0d",
-                 ref_wr, rd_count, err, pack_entries, rout_entries);
-        // one final burst may still be in the write->readback pipeline
-        if (err == 0 && (ref_wr - ref_rd) <= 2*16 && rd_count > 100)
-            $display("PASS: read-back pixels match written pixels (%0d px)", rd_count);
+        $display("RESULT: fb_ready=%0d written=%0d readback=%0d mismatches=%0d",
+                 fb_ready, (fb_ready ? FB_WORDS*2 : 0), rd_count, err);
+        if (err == 0 && fb_ready && rd_count > (3 * FB_PIX))
+            $display("PASS: frame-buffer read-back matches static pattern (%0d px read)", rd_count);
         else
             $display("FAIL");
         $finish;

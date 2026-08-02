@@ -49,6 +49,7 @@ module sdram_user_ctrl_selftest_tb;
 
     integer done_c = 0;
     integer err_cycles = 0;
+    integer rdv_c = 0;
     integer cmd_c = 0;
     reg [3:0] prev_state = 0;
     integer state_seen [0:15];
@@ -57,6 +58,7 @@ module sdram_user_ctrl_selftest_tb;
     always @(posedge clk) begin
         if (selftest_done) done_c = done_c + 1;
         if (selftest_err)  err_cycles = err_cycles + 1;
+        if (rd_pix_valid)  rdv_c = rdv_c + 1;
         if (user_cmd_en)   cmd_c = cmd_c + 1;
         if (uut.state != prev_state) begin
             if (cmd_c < 40 || $time < 20000) begin
@@ -73,10 +75,10 @@ module sdram_user_ctrl_selftest_tb;
         rst_n = 1'b1;
         repeat (300000) @(posedge clk);
 
-        $display("RESULT selftest: done=%0d err_cycles=%0d err_cnt=%0d init=%0b rd_valid=%0d",
-                 done_c, err_cycles, selftest_err_cnt, init_done, rd_pix_valid);
-        if (done_c > 100 && err_cycles == 0 && selftest_err_cnt == 0)
-            $display("PASS (selftest): SDRAM write+readback self-check clean");
+        $display("RESULT selftest: done=%0d err_cycles=%0d err_cnt=%0d init=%0b rdv=%0d",
+                 done_c, err_cycles, selftest_err_cnt, init_done, rdv_c);
+        if (done_c > 100 && err_cycles == 0 && selftest_err_cnt == 0 && rdv_c > 100)
+            $display("PASS (selftest): write+readback clean AND streams to FIFO");
         else
             $display("FAIL (selftest)");
         $finish;

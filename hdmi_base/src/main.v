@@ -60,16 +60,20 @@ assign led[5] = (!lock) ? led_cnt[22] : led_cnt[24];
 
 // ---- SDRAM bring-up LEDs (board-level diagnostics) ----
 // led[1] = SDRAM init complete      (O_sdrc_init_done)
-// led[2] = SDRAM read-back mismatch (sticky, self-test error)
-// led[3] = SDRAM self-test loop running (slow blink while bursts are checked)
+// led[2] = frame buffer ready       (first full frame stored in SDRAM)
+// led[3] = SDRAM command activity    (slow blink while bursts are cycling)
 // led[4] = system PLL locked (clk_sys alive)
 assign led[1] = sdrc_init_done;
-assign led[2] = selftest_err;
+assign led[2] = fb_ready;
 assign led[4] = lock_sys;
+// DIAGNOSTIC: led[3] counts O_sdrc_cmd_ack - proves the SDRAM controller is
+// issuing AND completing commands (ACT/WRITE/READ/REF). If this blinks, the
+// command path is alive and the block is in the ST_ROUT streaming output; if
+// it is dead, the controller is not cycling commands at all.
 reg [25:0] st_cnt;
 always @(posedge clk_sys or negedge rst_n) begin
     if (!rst_n) st_cnt <= 26'd0;
-    else if (selftest_done) st_cnt <= st_cnt + 26'd1;
+    else if (sdrc_cmd_ack) st_cnt <= st_cnt + 26'd1;
 end
 assign led[3] = st_cnt[22];
 
@@ -97,7 +101,8 @@ wire lock_sys;
 assign hdmi_rst_n = rst_n && lock; // Hold HDMI domain in reset until PLL locks
 
 timing #(
-    .PLL_PROFILE(2'd3) // 1080p60
+    // .PLL_PROFILE(2'd3) // 1080p60
+    .PLL_PROFILE(2'd0)    // 1080p30 / 720p60 pixel clock
 ) u_timing (
     .clk(clk),
     .rst_n(rst_n),
@@ -124,8 +129,10 @@ pattern_gen #(
 ) test_pattern (
     .clk(clk_sys),
     .rst_n(rst_n),
-    .ready(!fifo_full), // Backpressure from line buffer FIFO
-    .frame_pulse(frame_pulse), // Pulse at the start of each frame for synchronization
+    .ready(wr_ready), // SDRAM write path backpressure (frame buffer write side)
+    .frame_pulse(1'b0), // FRAME-BUFFER MODE: pattern free-runs (static, self-wraps);
+                        // a frame_pulse reset here would desync the write pointer
+                        // from the pattern position and smear the image.
     .x(x),
     .y(y),
     .rgb_o(rgb_ptrn_o), // Connect to TMDS encoder later
@@ -147,14 +154,25 @@ wire frame_pulse = vsync_sys[1] && !vsync_sys[2];
 wire de_hdmi;
 wire fifo_full, fifo_empty;
 wire fifo_almost_full, fifo_almost_empty;
+
+// Pipeline the SDRAM read-back stream one stage right before the FIFO so the
+// async_fifo write-pointer chain launches from a register placed near the FIFO
+// (keeps the FIFO write path off the critical path).
+reg [15:0] rd_pix_q;
+reg        rd_pix_valid_q;
+always @(posedge clk_sys or negedge rst_n) begin
+    if (!rst_n) begin rd_pix_q <= 16'd0; rd_pix_valid_q <= 1'b0; end
+    else begin rd_pix_q <= rd_pix; rd_pix_valid_q <= rd_pix_valid; end
+end
+
 async_fifo #(
     .ADDRESS_WIDTH(12), // 4096 entries, enough for one line of 1080p (1920 pixels)
     .DATA_WIDTH(16)
 ) hdmi_line_buf_fifo (
     .w_clk(clk_sys),
     .w_rst_n(rst_n),
-    .w_en(!fifo_full),
-    .w_data(rgb_ptrn_out_565),
+    .w_en(rd_pix_valid_q),   // SDRAM read-back pixels (frame buffer read side)
+    .w_data(rd_pix_q),
     .full(fifo_full),
     .almost_full(fifo_almost_full),
 
@@ -220,23 +238,21 @@ wire [20:0] sdrc_addr;
 wire [31:0] sdrc_wdata;
 wire [7:0]  sdrc_data_len;
 wire [31:0] sdrc_rdata;
-wire [15:0] rd_pix;        // SDRAM read-back pixel -> line-buffer FIFO (unused in selftest)
-wire        rd_pix_valid;  // FIFO write strobe (clk_sys) (unused in selftest)
-wire        wr_ready;      // SDRAM write path can accept a pixel (unused in selftest)
-wire        selftest_done; // SDRAM self-test burst checked (loop running)
-wire        selftest_err;  // sticky: SDRAM read-back mismatch
+wire [15:0] rd_pix;        // SDRAM read-back pixel -> line-buffer FIFO
+wire        rd_pix_valid;  // FIFO write strobe (clk_sys)
+wire        wr_ready;      // SDRAM write path can accept a pixel (frame buffer write)
+wire        fb_ready;      // first full frame stored in SDRAM (display valid)
+wire        selftest_done; // retained port (unused)
+wire        selftest_err;  // retained port (unused)
 wire [15:0] selftest_err_cnt;
 
-// SDRAM user controller: board bring-up SELF-TEST. SELFTEST_EN=1 makes it
-// write KNOWN data (independent of the pattern) to SDRAM, read it back and
-// compare, reporting on led[1..3]. The HDMI display runs directly from the
-// pattern generator so SDRAM bring-up is isolated from display issues.
-// Once selftest_err stays 0 and init_done is high, SDRAM write/read works;
-// then switch RD_OUT_EN=1 / SELFTEST_EN=0 to route video through SDRAM.
+// SDRAM user controller: ROLLING FRAME BUFFER. Pattern pixels are packed and
+// burst-written into SDRAM (w_addr); a read pointer sweeps the same frame
+// region and refills the line-buffer FIFO for the HDMI display. Because the
+// test pattern is static, the write/read pointers free-run independently.
 sdram_user_ctrl #(
-    .BURST_SIZE(4),
-    .RD_OUT_EN(0),
-    .SELFTEST_EN(1)
+    .BURST_SIZE(64),
+    .FB_WORDS(1036800)   // exact frame size in words = 1920*1080/2 (not a power of 2)
 ) u_sdram_user_ctrl (
     .clk        (clk_sys),
     .rst_n      (rst_n),
@@ -252,8 +268,9 @@ sdram_user_ctrl #(
     .read_data  (sdrc_rdata),
     .rd_pix     (rd_pix),
     .rd_pix_valid(rd_pix_valid),
-    .rd_ready   (1'b1),
+    .rd_ready   (!fifo_full),
     .wr_ready   (wr_ready),
+    .fb_ready        (fb_ready),
     .selftest_done   (selftest_done),
     .selftest_err    (selftest_err),
     .selftest_err_cnt(selftest_err_cnt)
