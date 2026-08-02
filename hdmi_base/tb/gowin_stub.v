@@ -95,3 +95,69 @@ assign O = I;
 assign OB = ~I;
 
 endmodule
+
+// Minimal behavioral stub of the encrypted SDRAM Controller HS IP, so main.v
+// can be compiled / smoke-tested without the IP netlist.
+module SDRAM_Controller_HS_Top (
+    output        O_sdram_clk,
+    output        O_sdram_cke,
+    output        O_sdram_cs_n,
+    output        O_sdram_cas_n,
+    output        O_sdram_ras_n,
+    output        O_sdram_wen_n,
+    output [3:0]  O_sdram_dqm,
+    output [10:0] O_sdram_addr,
+    output [1:0]  O_sdram_ba,
+    inout  [31:0] IO_sdram_dq,
+    input         I_sdrc_rst_n,
+    input         I_sdrc_clk,
+    input         I_sdram_clk,
+    input         I_sdrc_cmd_en,
+    input  [2:0]  I_sdrc_cmd,
+    input         I_sdrc_precharge_ctrl,
+    input         I_sdram_power_down,
+    input         I_sdram_selfrefresh,
+    input  [20:0] I_sdrc_addr,
+    input  [3:0]  I_sdrc_dqm,
+    input  [31:0] I_sdrc_data,
+    input  [7:0]  I_sdrc_data_len,
+    output [31:0] O_sdrc_data,
+    output        O_sdrc_init_done,
+    output        O_sdrc_cmd_ack
+);
+
+    reg [7:0]  init_cnt = 0;
+    reg        init_done_r = 0;
+    reg [3:0]  ack_cnt = 0;
+    reg        ack_r = 0;
+    reg [31:0] dq_r;
+
+    assign O_sdram_clk = I_sdram_clk;
+    assign O_sdram_cke = 1'b1;
+    assign O_sdram_cs_n = 1'b0;
+    assign O_sdram_cas_n = 1'b1;
+    assign O_sdram_ras_n = 1'b1;
+    assign O_sdram_wen_n = 1'b1;
+    assign O_sdram_dqm  = 4'b0000;
+    assign O_sdram_addr = 11'd0;
+    assign O_sdram_ba   = 2'd0;
+    assign IO_sdram_dq  = 32'bz;
+    assign O_sdrc_data  = dq_r;
+    assign O_sdrc_init_done = init_done_r;
+    assign O_sdrc_cmd_ack  = ack_r;
+
+    always @(posedge I_sdrc_clk or negedge I_sdrc_rst_n) begin
+        if (!I_sdrc_rst_n) begin
+            init_cnt <= 0; init_done_r <= 0; ack_cnt <= 0; ack_r <= 0; dq_r <= 0;
+        end else begin
+            if (init_cnt < 8'd200) init_cnt <= init_cnt + 1;
+            else init_done_r <= 1'b1;
+
+            // crude ack strobe after each accepted command
+            if (I_sdrc_cmd_en) ack_cnt <= 4'd4;
+            else if (ack_cnt != 0) ack_cnt <= ack_cnt - 1;
+            ack_r <= (ack_cnt == 4'd1);
+        end
+    end
+
+endmodule

@@ -57,6 +57,8 @@ always @(posedge clk) begin
     led_cnt <= led_cnt + 26'd1;
 end
 assign led[5] = (!lock) ? led_cnt[22] : led_cnt[24];
+assign led[1] = rdbk_err;   // SDRAM readback mismatch (sticky)
+assign led[2] = rdbk_done;  // SDRAM readback verify done (pulse)
 
 // Frame counter for debugging
 reg [24:0] rst_cnt = 0;
@@ -205,6 +207,8 @@ wire [20:0] sdrc_addr;
 wire [31:0] sdrc_wdata;
 wire [7:0]  sdrc_data_len;
 wire [31:0] sdrc_rdata;
+wire        rdbk_err;   // SDRAM readback mismatch (sticky)
+wire        rdbk_done;  // SDRAM readback verify done
 
 // SDRAM user controller (write/read test sequencer)
 sdram_user_ctrl u_sdram_user_ctrl (
@@ -219,8 +223,9 @@ sdram_user_ctrl u_sdram_user_ctrl (
     .user_addr  (sdrc_addr),
     .user_data  (sdrc_wdata),
     .user_len   (sdrc_data_len),
-    .data_valid (sdrc_cmd_ack),  // O_sdrc_data_valid not exposed by IP; approximate with cmd_ack
-    .read_data  (sdrc_rdata)
+    .read_data  (sdrc_rdata),
+    .rdbk_err   (rdbk_err),
+    .rdbk_done  (rdbk_done)
 );
 
 // SDRAM controller IP
