@@ -23,19 +23,20 @@
 //   * Auto-refresh is user controlled: we issue REFRESH periodically
 //     (~14.4us @166.5MHz) between bursts.
 //
-// VERIFY_EN=1: after every write burst the same address is read back and
-//              compared (rdbk_err is sticky, rdbk_done pulses).
-//              NOTE: this halves effective write bandwidth; set to 0 for
-//              continuous video-frame capture.
+// RD_OUT_EN=1 (default): after every write burst the same address is read
+// back and streamed out as 16-bit pixels (rd_pix/rd_pix_valid) to the
+// line-buffer async FIFO. NOTE: write+readback of each burst halves the
+// effective write bandwidth; set RD_OUT_EN=0 for pure write-only mode.
 //====================================================================
-// TIMING NOTE (Aug 2026): BURST_SIZE=32 with VERIFY_EN=1 blew up clk_sys
-// (166.5MHz) timing (TNS -622ns, 828 violated endpoints, Fmax ~105MHz) and
-// broke the HDMI pattern path. Keep BURST_SIZE small (16) and VERIFY_EN=0
-// for the main build; shift-register write output avoids the indexed-mux
-// fanout. Readback-verify is only synthesized when VERIFY_EN=1 (bring-up).
+// TIMING NOTE (Aug 2026): BURST_SIZE=32 + readback blew up clk_sys
+// (166.5MHz) timing (TNS -622ns, 828 endpoints, Fmax ~105MHz) and broke the
+// HDMI pattern path. Keep BURST_SIZE small (main uses 4); shift-register
+// write output avoids the indexed-mux fanout; readout uses a small circular
+// buffer (N deep) so its mux stays small.
 module sdram_user_ctrl #(
     parameter integer BURST_SIZE = 16,   // words per burst (power of 2, 1..256)
-    parameter integer VERIFY_EN  = 0     // 1: write + readback verify, 0: write only
+    parameter integer RD_OUT_EN  = 1,    // 1: write + readback to FIFO, 0: write only
+    parameter integer SELFTEST_EN = 0    // 1: write KNOWN data, read back, self-check (board bring-up)
 ) (
     input             clk,               // I_sdrc_clk (clk_sys)
     input             rst_n,
@@ -51,9 +52,15 @@ module sdram_user_ctrl #(
     output     [7:0]  user_len,          // burst length - 1 (0-based)
     // From the SDRAM HS controller IP
     input      [31:0] read_data,         // O_sdrc_data
-    // Status
-    output reg        rdbk_err,          // sticky readback mismatch flag
-    output reg        rdbk_done          // pulses 1 clk when a verify completes
+    // To the line-buffer async FIFO (16-bit pixels, clk_sys write side)
+    output reg [15:0] rd_pix,            // read-back pixel
+    output reg        rd_pix_valid,      // pixel valid (FIFO write strobe)
+    input             rd_ready,          // FIFO not full (backpressure)
+    output            wr_ready,          // 1 when a pixel can be accepted (write path)
+    // Board bring-up self-test status
+    output reg        selftest_done,     // pulses once per self-checked burst (loop running)
+    output reg        selftest_err,      // sticky: any read-back mismatch
+    output reg [15:0] selftest_err_cnt   // running mismatch count
 );
 
     // ---- SDRAM command encoding (IPUG756 Table 6-1) ----
@@ -72,6 +79,10 @@ module sdram_user_ctrl #(
 
     assign user_len = N1;
 
+    // write-path pixel-accept strobe: the pattern gen may only advance a
+    // pixel while the controller is collecting a burst (lossless write)
+    assign wr_ready = (state == ST_PACK);
+
     // ---- FSM states ----
     // Command states assert user_cmd_en for exactly ONE cycle (IPUG756:
     // cmd_en is a 1-cycle pulse), then a matching _W state waits for cmd_ack.
@@ -88,7 +99,7 @@ module sdram_user_ctrl #(
     localparam ST_WWAIT = 4'd10;  // wait write cmd_ack
     localparam ST_RCMD  = 4'd11;  // issue READ
     localparam ST_RCAP  = 4'd12;  // capture read data until cmd_ack
-    localparam ST_RCHK  = 4'd13;  // compare readback vs written
+    localparam ST_ROUT  = 4'd13;  // stream read-back pixels to the FIFO
     localparam ST_NEXT  = 4'd14;  // advance address, back to PACK
 
     reg [3:0]  state;
@@ -99,9 +110,10 @@ module sdram_user_ctrl #(
     reg [20:0] wr_word_addr;              // linear word address of current burst
     reg [31:0] burst_buf [0:BURST_SIZE-1]; // written data (storage for VERIFY)
     reg [31:0] wr_shift [0:BURST_SIZE-1];  // shift register driving user_data out
-    reg [31:0] rd_buf    [0:BURST_SIZE-1]; // readback capture (circular, VERIFY only)
+    reg [31:0] rd_buf    [0:BURST_SIZE-1]; // readback capture (circular)
     reg [7:0]  rd_wptr;
-    reg [7:0]  rd_idx;
+    reg [7:0]  rd_word_idx;                // read-out word counter
+    reg        rd_half;                    // low/high 16-bit half of current word
     reg        row_open;
     reg [10:0] cur_row;
     reg [1:0]  cur_bank;
@@ -131,19 +143,24 @@ module sdram_user_ctrl #(
                 wr_shift[i] <= 32'd0;
             end
             rd_wptr      <= 8'd0;
-            rd_idx       <= 8'd0;
+            rd_word_idx  <= 8'd0;
+            rd_half      <= 1'b0;
+            rd_pix       <= 16'd0;
+            rd_pix_valid <= 1'b0;
+            selftest_done <= 1'b0;
+            selftest_err  <= 1'b0;
+            selftest_err_cnt <= 16'd0;
             row_open     <= 1'b0;
             cur_row      <= 11'd0;
             cur_bank     <= 2'd0;
             ref_cnt      <= 24'd0;
             ref_pending  <= 1'b0;
-            rdbk_err     <= 1'b0;
-            rdbk_done    <= 1'b0;
         end else begin
             // defaults
-            user_cmd_en <= 1'b0;
-            user_cmd    <= CMD_NOP;
-            rdbk_done   <= 1'b0;
+            user_cmd_en   <= 1'b0;
+            user_cmd      <= CMD_NOP;
+            rd_pix_valid  <= 1'b0;
+            selftest_done <= 1'b0;
 
             // free-running refresh timer
             if (ref_cnt == REFRESH_PERIOD) begin
@@ -161,8 +178,26 @@ module sdram_user_ctrl #(
 
                 //------------------------------------------------------
                 // Pack pairs of 16-bit pixels into 32-bit words.
+                // SELFTEST: fill the burst with KNOWN data (independent of the
+                // pattern generator) so the board LEDs can verify write+read.
                 ST_PACK: begin
-                    if (pix_valid) begin
+                    if (SELFTEST_EN) begin
+                        burst_buf[pack_cnt] <= {wr_word_addr[7:0], pack_cnt, 16'hA55A};
+                        if (pack_cnt == N1) begin
+                            pack_cnt <= 8'd0;
+                            if (ref_pending) begin
+                                state <= row_open ? ST_PRE : ST_REF;
+                            end else if (!row_open) begin
+                                state <= ST_ACT;
+                            end else if (!row_same) begin
+                                state <= ST_PRE;
+                            end else begin
+                                state <= ST_WCMD;
+                            end
+                        end else begin
+                            pack_cnt <= pack_cnt + 1'b1;
+                        end
+                    end else if (pix_valid) begin
                         if (!half_word) begin
                             pix_lo    <= pix_data;
                             half_word <= 1'b1;
@@ -261,12 +296,13 @@ module sdram_user_ctrl #(
 
                 ST_WWAIT: begin
                     if (cmd_ack) begin
-                        state <= VERIFY_EN ? ST_RCMD : ST_NEXT;
+                        // readback needed for FIFO output OR for the self-test
+                        state <= (RD_OUT_EN || SELFTEST_EN) ? ST_RCMD : ST_NEXT;
                     end
                 end
 
                 //------------------------------------------------------
-                // Read back the burst just written (VERIFY_EN only).
+                // Read back the burst just written and stream it to the FIFO.
                 ST_RCMD: begin
                     user_cmd_en <= 1'b1;
                     user_cmd    <= CMD_READ;
@@ -276,23 +312,49 @@ module sdram_user_ctrl #(
                 end
 
                 ST_RCAP: begin
+                    // circular capture; the i-th read word is stored at
+                    // (rd_wptr + i) & RD_MASK when capture ends (cmd_ack)
                     rd_buf[rd_wptr & RD_MASK] <= read_data;
                     rd_wptr <= rd_wptr + 1'b1;
                     if (cmd_ack) begin
-                        rd_idx <= 8'd0;
-                        state  <= ST_RCHK;
+                        rd_word_idx <= 8'd0;
+                        rd_half     <= 1'b0;
+                        state       <= ST_ROUT;
                     end
                 end
 
-                ST_RCHK: begin
-                    if (burst_buf[rd_idx] != rd_buf[(rd_wptr + rd_idx) & RD_MASK])
-                        rdbk_err <= 1'b1;
-                    if (rd_idx == N1) begin
-                        rd_idx    <= 8'd0;
-                        rdbk_done <= 1'b1;
-                        state     <= ST_NEXT;
-                    end else begin
-                        rd_idx <= rd_idx + 1'b1;
+                ST_ROUT: begin
+                    if (SELFTEST_EN) begin
+                        // compare each read-back word against what was written
+                        if (rd_buf[(rd_wptr + rd_word_idx) & RD_MASK] !== burst_buf[rd_word_idx]) begin
+                            selftest_err_cnt <= selftest_err_cnt + 16'd1;
+                            selftest_err     <= 1'b1;
+                        end
+                        if (rd_word_idx == N1) begin
+                            rd_word_idx    <= 8'd0;
+                            selftest_done  <= 1'b1;   // 1-cycle pulse per checked burst
+                            state          <= ST_NEXT;
+                        end else begin
+                            rd_word_idx <= rd_word_idx + 1'b1;
+                        end
+                    end else if (rd_ready) begin
+                        // output 2N 16-bit pixels: low half then high half of each
+                        // 32-bit word, gated by the FIFO backpressure (rd_ready)
+                        if (!rd_half) begin
+                            rd_pix       <= rd_buf[(rd_wptr + rd_word_idx) & RD_MASK][15:0];
+                            rd_pix_valid <= 1'b1;
+                            rd_half      <= 1'b1;
+                        end else begin
+                            rd_pix       <= rd_buf[(rd_wptr + rd_word_idx) & RD_MASK][31:16];
+                            rd_pix_valid <= 1'b1;
+                            rd_half      <= 1'b0;
+                            if (rd_word_idx == N1) begin
+                                rd_word_idx <= 8'd0;
+                                state       <= ST_NEXT;
+                            end else begin
+                                rd_word_idx <= rd_word_idx + 1'b1;
+                            end
+                        end
                     end
                 end
 
