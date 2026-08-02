@@ -24,7 +24,8 @@ module sdram_hs_model #(
     input      [7:0]  data_len,
     output reg [31:0] o_data,
     output reg        cmd_ack,
-    output reg        init_done
+    output reg        init_done,
+    output reg        protocol_error
 );
     localparam CMD_ACTIVE    = 3'b011;
     localparam CMD_WRITE     = 3'b100;
@@ -33,9 +34,7 @@ module sdram_hs_model #(
     localparam CMD_REFRESH   = 3'b001;
     localparam CMD_NOP       = 3'b111;
 
-    // Full address space (matches SDRAM_HALF_WORDS=2^20) -> no aliasing.
-    reg [31:0] mem [0:1048575];
-    integer i;
+    reg [31:0] mem [0:2097151];
 
     reg [2:0]  op;
     reg [20:0] op_addr;
@@ -44,7 +43,10 @@ module sdram_hs_model #(
     reg [8:0]  cnt;
     reg [8:0]  col_i;
 
-    wire [19:0] base = op_addr[19:0];
+    wire [20:0] base = op_addr;
+    reg [3:0] bank_open;
+    reg [10:0] open_row [0:3];
+    reg [7:0] init_cnt;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -57,12 +59,17 @@ module sdram_hs_model #(
             op        <= CMD_NOP;
             op_addr   <= 21'd0;
             op_len    <= 8'd0;
-            for (i = 0; i < 1048576; i = i + 1) mem[i] <= 32'd0;
+            bank_open <= 4'b0000;
+            init_cnt  <= 8'd0;
+            protocol_error <= 1'b0;
         end else begin
             cmd_ack <= 1'b0;
 
             if (!init_done) begin
-                init_done <= 1'b1;          // init completes shortly after reset
+                if (init_cnt == 8'd20)
+                    init_done <= 1'b1;
+                else
+                    init_cnt <= init_cnt + 1'b1;
             end
 
             if (cmd_en && !busy) begin
@@ -73,17 +80,32 @@ module sdram_hs_model #(
                 cnt     <= 9'd1;
                 col_i   <= 9'd0;
                 if (cmd == CMD_WRITE) begin
+                    if (!bank_open[addr[20:19]] || open_row[addr[20:19]] != addr[18:8])
+                        protocol_error <= 1'b1;
                     // word 0 sampled together with the write command.
                     // NOTE: use the addr port directly (op_addr is not yet
                     // updated by the non-blocking assignment in this edge).
-                    mem[addr[19:0]] <= data;
+                    mem[addr] <= data;
+                end else if (cmd == CMD_READ) begin
+                    if (!bank_open[addr[20:19]] || open_row[addr[20:19]] != addr[18:8])
+                        protocol_error <= 1'b1;
+                end else if (cmd == CMD_ACTIVE) begin
+                    if (bank_open[addr[20:19]])
+                        protocol_error <= 1'b1;
+                    bank_open[addr[20:19]] <= 1'b1;
+                    open_row[addr[20:19]] <= addr[18:8];
+                end else if (cmd == CMD_PRECHARGE) begin
+                    bank_open[addr[20:19]] <= 1'b0;
+                end else if (cmd == CMD_REFRESH) begin
+                    if (bank_open != 4'b0000)
+                        protocol_error <= 1'b1;
                 end
             end else if (busy) begin
                 case (op)
                     CMD_WRITE: begin
                         // stream words 1..len; then wait WR, then ack
                         if (cnt <= op_len)
-                            mem[base + {1'b0, cnt}] <= data;
+                            mem[base + cnt] <= data;
                         if (cnt == op_len + WR + 9'd1) begin
                             busy    <= 1'b0;
                             cmd_ack <= 1'b1;
@@ -94,7 +116,7 @@ module sdram_hs_model #(
                         // deterministic: data driven on cycles cnt=RCD..RCD+len,
                         // cmd_ack set on the LAST data-word cycle (RCD+len).
                         if (cnt >= RCD && cnt < RCD + op_len + 9'd1) begin
-                            o_data <= mem[base + {1'b0, col_i}];
+                            o_data <= mem[base + col_i];
                             col_i  <= col_i + 9'd1;
                         end
                         if (cnt == RCD + op_len) begin

@@ -1,240 +1,429 @@
-//====================================================================
-// sdram_user_ctrl.v
-// Burst-mode read/write sequencer for the Gowin SDRAM Controller HS IP.
+// Streaming bridge for the Gowin SDRAM Controller HS IP.
 //
-// IMPORTANT (per Gowin "SDRAM Controller HS" User Guide IPUG756):
-//   * I_sdrc_cmd[2:0] is the raw SDRAM command bus {RAS#, CAS#, WE#}
-//       ACTIVE    = 3'b011
-//       WRITE     = 3'b100
-//       READ      = 3'b101
-//       PRECHARGE = 3'b010
-//       REFRESH   = 3'b001
-//       NOP       = 3'b111
-//   * user_len is 0-based: value N-1 means a burst of N words.
-//   * Each command: assert user_cmd_en for exactly 1 cycle together with
-//     the command + address. For a WRITE burst, word 0 is presented on the
-//     same cycle as the command and words 1..N-1 on the following cycles.
-//   * O_sdrc_cmd_ack pulses for 1 cycle when the command's execution is
-//     complete; wait for it before issuing the next command.
-//   * The IP has NO O_sdrc_data_valid. Read data appears on O_sdrc_data
-//     (a registered copy of the SDRAM DQ bus); cmd_ack for a READ aligns
-//     with the last read word, so the last N samples before cmd_ack are the
-//     read data (captured here into a circular buffer).
-//   * Auto-refresh is user controlled: we issue REFRESH periodically
-//     (~14.4us @166.5MHz) between bursts.
+// Pixels are packed and emitted independently of the SDRAM command FSM. Two
+// write banks and two read banks allow all three paths to run concurrently:
 //
-// RD_OUT_EN=1 (default): after every write burst the same address is read
-// back and streamed out as 16-bit pixels (rd_pix/rd_pix_valid) to the
-// line-buffer async FIFO. NOTE: write+readback of each burst halves the
-// effective write bandwidth; set RD_OUT_EN=0 for pure write-only mode.
-//====================================================================
-// TIMING NOTE (Aug 2026): BURST_SIZE=32 + readback blew up clk_sys
-// (166.5MHz) timing (TNS -622ns, 828 endpoints, Fmax ~105MHz) and broke the
-// HDMI pattern path. Keep BURST_SIZE small (main uses 4); shift-register
-// write output avoids the indexed-mux fanout; readout uses a small circular
-// buffer (N deep) so its mux stays small.
+//   pixel source -> write bank -> SDRAM -> read bank -> HDMI async FIFO
+//
+// The HS IP owns SDRAM initialization and all tRCD/tRP/tRFC/tWR delays. This
+// module schedules commands, tracks the one row it leaves open, and guarantees
+// periodic AUTO REFRESH commands.
 module sdram_user_ctrl #(
-    parameter integer BURST_SIZE = 16,   // words per burst (power of 2, 1..256)
-    parameter integer RD_OUT_EN  = 1,    // 1: write + readback to FIFO, 0: write only
-    parameter integer SELFTEST_EN = 0    // 1: write KNOWN data, read back, self-check (board bring-up)
+    parameter integer BURST_SIZE         = 64,
+    parameter integer CLK_FREQ_HZ        = 166_500_000,
+    parameter integer FRAME_WORDS        = 1_036_800,
+    parameter integer MAX_PENDING_BURSTS = 64,
+    parameter integer PREFILL_PIXELS      = 2048
 ) (
-    input             clk,               // I_sdrc_clk (clk_sys)
-    input             rst_n,
-    input             init_done,         // O_sdrc_init_done
-    input             cmd_ack,           // O_sdrc_cmd_ack
-    input             pix_valid,         // 16-bit pixel valid (write source)
-    input      [15:0] pix_data,
-    // To the SDRAM HS controller IP
-    output reg [2:0]  user_cmd,
-    output reg        user_cmd_en,
-    output reg [20:0] user_addr,         // {bank[20:19], row[18:8], col[7:0]}
-    output reg [31:0] user_data,
-    output     [7:0]  user_len,          // burst length - 1 (0-based)
-    // From the SDRAM HS controller IP
-    input      [31:0] read_data,         // O_sdrc_data
-    // To the line-buffer async FIFO (16-bit pixels, clk_sys write side)
-    output reg [15:0] rd_pix,            // read-back pixel
-    output reg        rd_pix_valid,      // pixel valid (FIFO write strobe)
-    input             rd_ready,          // FIFO not full (backpressure)
-    output            wr_ready,          // 1 when a pixel can be accepted (write path)
-    // Board bring-up self-test status
-    output reg        selftest_done,     // pulses once per self-checked burst (loop running)
-    output reg        selftest_err,      // sticky: any read-back mismatch
-    output reg [15:0] selftest_err_cnt   // running mismatch count
+    input              clk,
+    input              rst_n,
+    input              init_done,
+    input              cmd_ack,
+
+    input              pix_valid,
+    input      [15:0]  pix_data,
+    output             wr_ready,
+
+    output reg [2:0]   user_cmd,
+    output reg         user_cmd_en,
+    output reg [20:0]  user_addr,
+    output reg [31:0]  user_data,
+    output      [7:0]  user_len,
+    input      [31:0]  read_data,
+
+    output     [15:0]  rd_pix,
+    output             rd_pix_valid,
+    input              rd_ready,
+    output reg          stream_ready
 );
 
-    // ---- SDRAM command encoding (IPUG756 Table 6-1) ----
-    localparam CMD_NOP       = 3'b111;
-    localparam CMD_ACTIVE    = 3'b011;
-    localparam CMD_WRITE     = 3'b100;
-    localparam CMD_READ      = 3'b101;
-    localparam CMD_PRECHARGE = 3'b010;
-    localparam CMD_REFRESH   = 3'b001;
+    localparam [2:0] CMD_NOP       = 3'b111;
+    localparam [2:0] CMD_ACTIVE    = 3'b011;
+    localparam [2:0] CMD_WRITE     = 3'b100;
+    localparam [2:0] CMD_READ      = 3'b101;
+    localparam [2:0] CMD_PRECHARGE = 3'b010;
+    localparam [2:0] CMD_REFRESH   = 3'b001;
 
-    // ---- geometry / limits ----
-    localparam SDRAM_HALF_WORDS = 21'h100000;          // use first half (4MB)
-    localparam [7:0] N1         = BURST_SIZE[7:0] - 8'd1; // last index / data_len
-    localparam [7:0] RD_MASK    = BURST_SIZE[7:0] - 8'd1; // circular buffer mask (N must be power of 2)
-    localparam [23:0] REFRESH_PERIOD = 24'd2400;           // ~14.4us @ 166.5MHz
+    localparam integer BURST_AW = $clog2(BURST_SIZE);
+    localparam [BURST_AW-1:0] BURST_LAST = BURST_SIZE - 1;
+    localparam [7:0] BURST_LEN = BURST_SIZE - 1;
+    localparam integer PENDING_W = $clog2(MAX_PENDING_BURSTS + 1);
+    localparam integer PREFILL_W = $clog2(PREFILL_PIXELS + 1);
+    localparam [PENDING_W-1:0] MAX_PENDING = MAX_PENDING_BURSTS;
+    localparam [PREFILL_W-1:0] PREFILL_LAST = PREFILL_PIXELS - 1;
+    localparam [20:0] BURST_STEP = BURST_SIZE;
+    localparam [20:0] FRAME_LAST_START = FRAME_WORDS - BURST_SIZE;
 
-    assign user_len = N1;
+    // Refresh every 13 us. The SDRAM requires 4096 refreshes per 64 ms
+    // (15.625 us), leaving more than 2 us for the current burst to finish.
+    localparam integer REFRESH_CYCLES = (CLK_FREQ_HZ / 1_000_000) * 13;
+    localparam integer REFRESH_W = $clog2(REFRESH_CYCLES + 1);
+    localparam [REFRESH_W-1:0] REFRESH_LAST = REFRESH_CYCLES - 1;
 
-    // write-path pixel-accept strobe: the pattern gen may only advance a
-    // pixel while the controller is collecting a burst (lossless write)
-    assign wr_ready = (state == ST_PACK);
+    assign user_len = BURST_LEN;
 
-    // ---- FSM states ----
-    // Command states assert user_cmd_en for exactly ONE cycle (IPUG756:
-    // cmd_en is a 1-cycle pulse), then a matching _W state waits for cmd_ack.
-    localparam ST_IDLE  = 4'd0;
-    localparam ST_PACK  = 4'd1;   // collect pixels into burst_buf
-    localparam ST_PRE   = 4'd2;   // issue PRECHARGE
-    localparam ST_PRE_W = 4'd3;   // wait PRECHARGE ack
-    localparam ST_REF   = 4'd4;   // issue AUTO REFRESH
-    localparam ST_REF_W = 4'd5;   // wait REFRESH ack
-    localparam ST_ACT   = 4'd6;   // issue ACTIVATE (bank,row)
-    localparam ST_ACT_W = 4'd7;   // wait ACTIVATE ack
-    localparam ST_WCMD  = 4'd8;   // issue WRITE + word 0
-    localparam ST_WDAT  = 4'd9;   // stream words 1..N-1
-    localparam ST_WWAIT = 4'd10;  // wait write cmd_ack
-    localparam ST_RCMD  = 4'd11;  // issue READ
-    localparam ST_RCAP  = 4'd12;  // capture read data until cmd_ack
-    localparam ST_ROUT  = 4'd13;  // stream read-back pixels to the FIFO
-    localparam ST_NEXT  = 4'd14;  // advance address, back to PACK
+    // ------------------------------------------------------------------
+    // Pixel packer and two ping-pong write banks.
+    reg                 pack_bank;
+    reg                 pack_half;
+    reg [15:0]          pack_lo;
+    reg [BURST_AW-1:0]  pack_addr;
+    reg                 wr_full0;
+    reg                 wr_full1;
 
-    reg [3:0]  state;
-    reg [7:0]  pack_cnt;
-    reg [7:0]  send_cnt;
-    reg        half_word;
-    reg [15:0] pix_lo;
-    reg [20:0] wr_word_addr;              // linear word address of current burst
-    reg [31:0] burst_buf [0:BURST_SIZE-1]; // written data (storage for VERIFY)
-    reg [31:0] wr_shift [0:BURST_SIZE-1];  // shift register driving user_data out
-    reg [31:0] rd_buf    [0:BURST_SIZE-1]; // readback capture (circular)
-    reg [7:0]  rd_wptr;
-    reg [7:0]  rd_word_idx;                // read-out word counter
-    reg        rd_half;                    // low/high 16-bit half of current word
-    reg        row_open;
-    reg [10:0] cur_row;
-    reg [1:0]  cur_bank;
-    reg [23:0] ref_cnt;
-    reg        ref_pending;
-    integer    i;
+    wire selected_write_full = pack_bank ? wr_full1 : wr_full0;
+    assign wr_ready = init_done && !selected_write_full;
+    wire pix_accept = pix_valid && wr_ready;
+    wire pack_word = pix_accept && pack_half;
+    wire pack_commit = pack_word && (pack_addr == BURST_LAST);
+    wire [31:0] packed_data = {pix_data, pack_lo};
 
-    // target bank/row/col for the current burst address
-    wire [1:0]  tgt_bank = wr_word_addr[20:19];
-    wire [10:0] tgt_row  = wr_word_addr[18:8];
-    wire [7:0]  tgt_col  = wr_word_addr[7:0];
-    wire        row_same = row_open && (cur_bank == tgt_bank) && (cur_row == tgt_row);
+    reg                 wr_send_bank;
+    reg                 wr_consume_bank;
+    reg [BURST_AW-1:0]  wr_raddr0;
+    reg [BURST_AW-1:0]  wr_raddr1;
+    wire [31:0]         wr_rdata0;
+    wire [31:0]         wr_rdata1;
+    wire [31:0]         wr_selected_data = wr_send_bank ? wr_rdata1 : wr_rdata0;
+
+    sdp_bram #(.ADDRESS_WIDTH(BURST_AW), .DATA_WIDTH(32)) write_bank0 (
+        .w_clk(clk), .w_en(pack_word && !pack_bank), .w_addr(pack_addr), .w_data(packed_data),
+        .r_clk(clk), .r_en(1'b1), .r_addr(wr_raddr0), .r_data(wr_rdata0)
+    );
+    sdp_bram #(.ADDRESS_WIDTH(BURST_AW), .DATA_WIDTH(32)) write_bank1 (
+        .w_clk(clk), .w_en(pack_word && pack_bank), .w_addr(pack_addr), .w_data(packed_data),
+        .r_clk(clk), .r_en(1'b1), .r_addr(wr_raddr1), .r_data(wr_rdata1)
+    );
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            state        <= ST_IDLE;
-            user_cmd     <= CMD_NOP;
-            user_cmd_en  <= 1'b0;
-            user_addr    <= 21'd0;
-            user_data    <= 32'd0;
-            pack_cnt     <= 8'd0;
-            send_cnt     <= 8'd0;
-            half_word    <= 1'b0;
-            pix_lo       <= 16'd0;
-            wr_word_addr <= 21'd0;
-            for (i = 0; i < BURST_SIZE; i = i + 1) begin
-                wr_shift[i] <= 32'd0;
-            end
-            rd_wptr      <= 8'd0;
-            rd_word_idx  <= 8'd0;
-            rd_half      <= 1'b0;
-            rd_pix       <= 16'd0;
-            rd_pix_valid <= 1'b0;
-            selftest_done <= 1'b0;
-            selftest_err  <= 1'b0;
-            selftest_err_cnt <= 16'd0;
-            row_open     <= 1'b0;
-            cur_row      <= 11'd0;
-            cur_bank     <= 2'd0;
-            ref_cnt      <= 24'd0;
-            ref_pending  <= 1'b0;
-        end else begin
-            // defaults
-            user_cmd_en   <= 1'b0;
-            user_cmd      <= CMD_NOP;
-            rd_pix_valid  <= 1'b0;
-            selftest_done <= 1'b0;
-
-            // free-running refresh timer
-            if (ref_cnt == REFRESH_PERIOD) begin
-                ref_cnt     <= 24'd0;
-                ref_pending <= 1'b1;
+            pack_bank <= 1'b0;
+            pack_half <= 1'b0;
+            pack_lo   <= 16'd0;
+            pack_addr <= {BURST_AW{1'b0}};
+        end else if (!init_done) begin
+            pack_bank <= 1'b0;
+            pack_half <= 1'b0;
+            pack_lo   <= 16'd0;
+            pack_addr <= {BURST_AW{1'b0}};
+        end else if (pix_accept) begin
+            if (!pack_half) begin
+                pack_lo   <= pix_data;
+                pack_half <= 1'b1;
             end else begin
-                ref_cnt <= ref_cnt + 1'b1;
+                pack_half <= 1'b0;
+                if (pack_addr == BURST_LAST) begin
+                    pack_addr <= {BURST_AW{1'b0}};
+                    pack_bank <= ~pack_bank;
+                end else begin
+                    pack_addr <= pack_addr + 1'b1;
+                end
+            end
+        end
+    end
+
+    // ------------------------------------------------------------------
+    // Two ping-pong read-capture banks. The HS IP has no read-valid signal;
+    // cmd_ack is aligned with the final word, so the last BURST_SIZE samples
+    // in this circular buffer are the completed read.
+    reg                 rd_produce_bank;
+    reg                 rd_consume_bank;
+    reg                 rd_full0;
+    reg                 rd_full1;
+    reg [BURST_AW-1:0]  rd_cap_ptr;
+    reg [BURST_AW-1:0]  rd_start0;
+    reg [BURST_AW-1:0]  rd_start1;
+    reg [BURST_AW-1:0]  rd_raddr0;
+    reg [BURST_AW-1:0]  rd_raddr1;
+    wire [31:0]         rd_rdata0;
+    wire [31:0]         rd_rdata1;
+    wire [31:0]         rd_selected_data = rd_consume_bank ? rd_rdata1 : rd_rdata0;
+
+    wire read_capture;
+    sdp_bram #(.ADDRESS_WIDTH(BURST_AW), .DATA_WIDTH(32)) read_bank0 (
+        .w_clk(clk), .w_en(read_capture && !rd_produce_bank), .w_addr(rd_cap_ptr), .w_data(read_data),
+        .r_clk(clk), .r_en(1'b1), .r_addr(rd_raddr0), .r_data(rd_rdata0)
+    );
+    sdp_bram #(.ADDRESS_WIDTH(BURST_AW), .DATA_WIDTH(32)) read_bank1 (
+        .w_clk(clk), .w_en(read_capture && rd_produce_bank), .w_addr(rd_cap_ptr), .w_data(read_data),
+        .r_clk(clk), .r_en(1'b1), .r_addr(rd_raddr1), .r_data(rd_rdata1)
+    );
+
+    // Read-bank output runs independently from SDRAM commands and emits one
+    // pixel per clk while the downstream FIFO is ready.
+    reg                 out_wait;
+    reg                 out_load;
+    reg                 out_active;
+    reg                 out_half;
+    reg [BURST_AW-1:0]  out_word;
+    reg [31:0]          out_data;
+
+    assign rd_pix = out_half ? out_data[31:16] : out_data[15:0];
+    assign rd_pix_valid = out_active;
+    wire out_accept = out_active && rd_ready;
+    wire out_release = out_accept && out_half && (out_word == BURST_LAST);
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            rd_consume_bank <= 1'b0;
+            rd_raddr0       <= {BURST_AW{1'b0}};
+            rd_raddr1       <= {BURST_AW{1'b0}};
+            out_wait        <= 1'b0;
+            out_load        <= 1'b0;
+            out_active      <= 1'b0;
+            out_half        <= 1'b0;
+            out_word        <= {BURST_AW{1'b0}};
+            out_data        <= 32'd0;
+        end else if (!init_done) begin
+            rd_consume_bank <= 1'b0;
+            rd_raddr0       <= {BURST_AW{1'b0}};
+            rd_raddr1       <= {BURST_AW{1'b0}};
+            out_wait        <= 1'b0;
+            out_load        <= 1'b0;
+            out_active      <= 1'b0;
+            out_half        <= 1'b0;
+            out_word        <= {BURST_AW{1'b0}};
+            out_data        <= 32'd0;
+        end else if (!out_active && !out_wait && !out_load) begin
+            if (rd_consume_bank ? rd_full1 : rd_full0) begin
+                if (rd_consume_bank)
+                    rd_raddr1 <= rd_start1;
+                else
+                    rd_raddr0 <= rd_start0;
+                out_word <= {BURST_AW{1'b0}};
+                out_half <= 1'b0;
+                out_wait <= 1'b1;
+            end
+        end else if (out_wait) begin
+            out_wait <= 1'b0;
+            out_load <= 1'b1;
+        end else if (out_load) begin
+            // Register the synchronous RAM output so backpressure cannot
+            // replace the current word with prefetched data.
+            out_load   <= 1'b0;
+            out_active <= 1'b1;
+            out_data   <= rd_selected_data;
+            if (BURST_SIZE > 1) begin
+                if (rd_consume_bank)
+                    rd_raddr1 <= rd_start1 + 1'b1;
+                else
+                    rd_raddr0 <= rd_start0 + 1'b1;
+            end
+        end else if (out_accept) begin
+            if (!out_half) begin
+                out_half <= 1'b1;
+            end else begin
+                out_half <= 1'b0;
+                if (out_word == BURST_LAST) begin
+                    out_active      <= 1'b0;
+                    rd_consume_bank <= ~rd_consume_bank;
+                end else begin
+                    out_data <= rd_selected_data;
+                    out_word <= out_word + 1'b1;
+                    if (out_word != BURST_LAST - 1'b1) begin
+                        if (rd_consume_bank)
+                            rd_raddr1 <= rd_start1 + out_word + 2'd2;
+                        else
+                            rd_raddr0 <= rd_start0 + out_word + 2'd2;
+                    end
+                end
+            end
+        end
+    end
+
+    reg [PREFILL_W-1:0] prefill_count;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            prefill_count <= {PREFILL_W{1'b0}};
+            stream_ready  <= 1'b0;
+        end else if (!init_done) begin
+            prefill_count <= {PREFILL_W{1'b0}};
+            stream_ready  <= 1'b0;
+        end else if (out_accept && !stream_ready) begin
+            if (prefill_count == PREFILL_LAST) begin
+                stream_ready <= 1'b1;
+            end else begin
+                prefill_count <= prefill_count + 1'b1;
+            end
+        end
+    end
+
+    // ------------------------------------------------------------------
+    // SDRAM command scheduler.
+    localparam [3:0] ST_IDLE   = 4'd0;
+    localparam [3:0] ST_PRE    = 4'd1;
+    localparam [3:0] ST_PRE_W  = 4'd2;
+    localparam [3:0] ST_REF    = 4'd3;
+    localparam [3:0] ST_REF_W  = 4'd4;
+    localparam [3:0] ST_ACT    = 4'd5;
+    localparam [3:0] ST_ACT_W  = 4'd6;
+    localparam [3:0] ST_WPREP  = 4'd7;
+    localparam [3:0] ST_WCMD   = 4'd8;
+    localparam [3:0] ST_WDATA  = 4'd9;
+    localparam [3:0] ST_WWAIT  = 4'd10;
+    localparam [3:0] ST_RCMD   = 4'd11;
+    localparam [3:0] ST_RCAP   = 4'd12;
+
+    reg [3:0] state;
+    reg       op_read;
+    reg       pre_for_refresh;
+    reg [20:0] op_addr;
+    reg [BURST_AW-1:0] send_word;
+    reg [20:0] write_addr;
+    reg [20:0] read_addr;
+    reg [PENDING_W-1:0] pending_bursts;
+
+    reg        row_open;
+    reg [1:0]  open_bank;
+    reg [10:0] open_row;
+    wire [1:0] op_bank = op_addr[20:19];
+    wire [10:0] op_row = op_addr[18:8];
+
+    reg [REFRESH_W-1:0] refresh_count;
+    wire refresh_due = (refresh_count >= REFRESH_LAST);
+    wire refresh_complete = (state == ST_REF_W) && cmd_ack;
+    wire write_release = (state == ST_WWAIT) && cmd_ack;
+    wire read_complete = (state == ST_RCAP) && cmd_ack;
+    assign read_capture = (state == ST_RCAP);
+
+    wire next_write_full = wr_consume_bank ? wr_full1 : wr_full0;
+    wire next_read_free = !(rd_produce_bank ? rd_full1 : rd_full0);
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            wr_full0 <= 1'b0;
+            wr_full1 <= 1'b0;
+            rd_full0 <= 1'b0;
+            rd_full1 <= 1'b0;
+        end else if (!init_done) begin
+            wr_full0 <= 1'b0;
+            wr_full1 <= 1'b0;
+            rd_full0 <= 1'b0;
+            rd_full1 <= 1'b0;
+        end else begin
+            if (pack_commit && !pack_bank) wr_full0 <= 1'b1;
+            if (pack_commit &&  pack_bank) wr_full1 <= 1'b1;
+            if (write_release && !wr_send_bank) wr_full0 <= 1'b0;
+            if (write_release &&  wr_send_bank) wr_full1 <= 1'b0;
+            if (read_complete && !rd_produce_bank) rd_full0 <= 1'b1;
+            if (read_complete &&  rd_produce_bank) rd_full1 <= 1'b1;
+            if (out_release && !rd_consume_bank) rd_full0 <= 1'b0;
+            if (out_release &&  rd_consume_bank) rd_full1 <= 1'b0;
+        end
+    end
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            refresh_count <= {REFRESH_W{1'b0}};
+        end else if (!init_done || refresh_complete) begin
+            refresh_count <= {REFRESH_W{1'b0}};
+        end else if (!refresh_due) begin
+            refresh_count <= refresh_count + 1'b1;
+        end
+    end
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            state             <= ST_IDLE;
+            user_cmd          <= CMD_NOP;
+            user_cmd_en       <= 1'b0;
+            user_addr         <= 21'd0;
+            user_data         <= 32'd0;
+            op_read           <= 1'b0;
+            op_addr           <= 21'd0;
+            pre_for_refresh   <= 1'b0;
+            send_word         <= {BURST_AW{1'b0}};
+            write_addr        <= 21'd0;
+            read_addr         <= 21'd0;
+            pending_bursts    <= {PENDING_W{1'b0}};
+            wr_send_bank      <= 1'b0;
+            wr_consume_bank   <= 1'b0;
+            wr_raddr0         <= {BURST_AW{1'b0}};
+            wr_raddr1         <= {BURST_AW{1'b0}};
+            rd_produce_bank   <= 1'b0;
+            rd_cap_ptr        <= {BURST_AW{1'b0}};
+            rd_start0         <= {BURST_AW{1'b0}};
+            rd_start1         <= {BURST_AW{1'b0}};
+            row_open          <= 1'b0;
+            open_bank         <= 2'd0;
+            open_row          <= 11'd0;
+        end else if (!init_done) begin
+            state             <= ST_IDLE;
+            user_cmd          <= CMD_NOP;
+            user_cmd_en       <= 1'b0;
+            user_addr         <= 21'd0;
+            user_data         <= 32'd0;
+            op_read           <= 1'b0;
+            op_addr           <= 21'd0;
+            pre_for_refresh   <= 1'b0;
+            send_word         <= {BURST_AW{1'b0}};
+            write_addr        <= 21'd0;
+            read_addr         <= 21'd0;
+            pending_bursts    <= {PENDING_W{1'b0}};
+            wr_send_bank      <= 1'b0;
+            wr_consume_bank   <= 1'b0;
+            wr_raddr0         <= {BURST_AW{1'b0}};
+            wr_raddr1         <= {BURST_AW{1'b0}};
+            rd_produce_bank   <= 1'b0;
+            rd_cap_ptr        <= {BURST_AW{1'b0}};
+            rd_start0         <= {BURST_AW{1'b0}};
+            rd_start1         <= {BURST_AW{1'b0}};
+            row_open          <= 1'b0;
+            open_bank         <= 2'd0;
+            open_row          <= 11'd0;
+        end else begin
+            user_cmd_en <= 1'b0;
+            user_cmd    <= CMD_NOP;
+
+            // A completed pack bank can preload word zero while the command
+            // scheduler finishes its current operation.
+            if (pack_commit) begin
+                if (pack_bank)
+                    wr_raddr1 <= {BURST_AW{1'b0}};
+                else
+                    wr_raddr0 <= {BURST_AW{1'b0}};
             end
 
             case (state)
-                //------------------------------------------------------
                 ST_IDLE: begin
-                    if (init_done) state <= ST_PACK;
-                end
-
-                //------------------------------------------------------
-                // Pack pairs of 16-bit pixels into 32-bit words.
-                // SELFTEST: fill the burst with KNOWN data (independent of the
-                // pattern generator) so the board LEDs can verify write+read.
-                ST_PACK: begin
-                    if (SELFTEST_EN) begin
-                        burst_buf[pack_cnt] <= {wr_word_addr[7:0], pack_cnt, 16'hA55A};
-                        if (pack_cnt == N1) begin
-                            pack_cnt <= 8'd0;
-                            if (ref_pending) begin
-                                state <= row_open ? ST_PRE : ST_REF;
-                            end else if (!row_open) begin
-                                state <= ST_ACT;
-                            end else if (!row_same) begin
-                                state <= ST_PRE;
-                            end else begin
-                                state <= ST_WCMD;
-                            end
-                        end else begin
-                            pack_cnt <= pack_cnt + 1'b1;
-                        end
-                    end else if (pix_valid) begin
-                        if (!half_word) begin
-                            pix_lo    <= pix_data;
-                            half_word <= 1'b1;
-                        end else begin
-                            burst_buf[pack_cnt] <= {pix_data, pix_lo};
-                            half_word <= 1'b0;
-                            if (pack_cnt == N1) begin
-                                pack_cnt <= 8'd0;
-                                // dispatch: refresh / activate / write now
-                                if (ref_pending) begin
-                                    state <= row_open ? ST_PRE : ST_REF;
-                                end else if (!row_open) begin
-                                    state <= ST_ACT;
-                                end else if (!row_same) begin
-                                    state <= ST_PRE;
-                                end else begin
-                                    state <= ST_WCMD;
-                                end
-                            end else begin
-                                pack_cnt <= pack_cnt + 1'b1;
-                            end
-                        end
+                    if (refresh_due) begin
+                        pre_for_refresh <= 1'b1;
+                        state <= row_open ? ST_PRE : ST_REF;
+                    end else if ((pending_bursts != 0) && next_read_free) begin
+                        op_read         <= 1'b1;
+                        op_addr         <= read_addr;
+                        pre_for_refresh <= 1'b0;
+                        if (!row_open)
+                            state <= ST_ACT;
+                        else if ((open_bank == read_addr[20:19]) && (open_row == read_addr[18:8]))
+                            state <= ST_RCMD;
+                        else
+                            state <= ST_PRE;
+                    end else if (next_write_full && (pending_bursts != MAX_PENDING)) begin
+                        op_read         <= 1'b0;
+                        op_addr         <= write_addr;
+                        wr_send_bank    <= wr_consume_bank;
+                        pre_for_refresh <= 1'b0;
+                        if (!row_open)
+                            state <= ST_ACT;
+                        else if ((open_bank == write_addr[20:19]) && (open_row == write_addr[18:8]))
+                            state <= ST_WPREP;
+                        else
+                            state <= ST_PRE;
                     end
                 end
 
-                //------------------------------------------------------
                 ST_PRE: begin
                     user_cmd_en <= 1'b1;
                     user_cmd    <= CMD_PRECHARGE;
-                    user_addr   <= {tgt_bank, 11'd0, 8'd0};  // A10=0: single-bank
+                    user_addr   <= {open_bank, 19'd0};
                     state       <= ST_PRE_W;
                 end
 
                 ST_PRE_W: begin
                     if (cmd_ack) begin
                         row_open <= 1'b0;
-                        state    <= ref_pending ? ST_REF : ST_ACT;
+                        state <= pre_for_refresh ? ST_REF : ST_ACT;
                     end
                 end
 
@@ -246,130 +435,101 @@ module sdram_user_ctrl #(
 
                 ST_REF_W: begin
                     if (cmd_ack) begin
-                        ref_pending <= 1'b0;
-                        state       <= ST_ACT;
+                        pre_for_refresh <= 1'b0;
+                        state <= ST_IDLE;
                     end
                 end
 
                 ST_ACT: begin
                     user_cmd_en <= 1'b1;
                     user_cmd    <= CMD_ACTIVE;
-                    user_addr   <= {tgt_bank, tgt_row, 8'd0};
+                    user_addr   <= {op_bank, op_row, 8'd0};
                     state       <= ST_ACT_W;
                 end
 
                 ST_ACT_W: begin
                     if (cmd_ack) begin
-                        row_open <= 1'b1;
-                        cur_bank <= tgt_bank;
-                        cur_row  <= tgt_row;
-                        state    <= ST_WCMD;
+                        row_open  <= 1'b1;
+                        open_bank <= op_bank;
+                        open_row  <= op_row;
+                        state <= op_read ? ST_RCMD : ST_WPREP;
                     end
                 end
 
-                //------------------------------------------------------
-                // Write burst: word 0 with the command, then stream words
-                // 1..N-1 from the shift register (no indexed-mux fanout).
+                ST_WPREP: begin
+                    user_data <= wr_selected_data;
+                    if (wr_send_bank)
+                        wr_raddr1 <= {{(BURST_AW-1){1'b0}}, 1'b1};
+                    else
+                        wr_raddr0 <= {{(BURST_AW-1){1'b0}}, 1'b1};
+                    state <= ST_WCMD;
+                end
+
                 ST_WCMD: begin
                     user_cmd_en <= 1'b1;
                     user_cmd    <= CMD_WRITE;
-                    user_addr   <= wr_word_addr;
-                    user_data   <= burst_buf[0];   // word 0 together with command
-                    send_cnt    <= 8'd1;
-                    // pre-load shift register with words 1..N-1
-                    for (i = 0; i < BURST_SIZE-1; i = i + 1)
-                        wr_shift[i] <= burst_buf[i+1];
-                    state       <= ST_WDAT;
+                    user_addr   <= op_addr;
+                    send_word   <= {{(BURST_AW-1){1'b0}}, 1'b1};
+                    if (wr_send_bank)
+                        wr_raddr1 <= {{(BURST_AW-2){1'b0}}, 2'd2};
+                    else
+                        wr_raddr0 <= {{(BURST_AW-2){1'b0}}, 2'd2};
+                    state <= ST_WDATA;
                 end
 
-                ST_WDAT: begin
-                    user_data <= wr_shift[0];      // stream words 1..N-1
-                    for (i = 0; i < BURST_SIZE-1; i = i + 1)
-                        wr_shift[i] <= wr_shift[i+1];
-                    if (send_cnt == N1) begin
-                        send_cnt <= 8'd0;
-                        state    <= ST_WWAIT;
+                ST_WDATA: begin
+                    user_data <= wr_selected_data;
+                    if (send_word == BURST_LAST) begin
+                        state <= ST_WWAIT;
                     end else begin
-                        send_cnt <= send_cnt + 1'b1;
+                        send_word <= send_word + 1'b1;
+                        if (wr_send_bank)
+                            wr_raddr1 <= send_word + 2'd2;
+                        else
+                            wr_raddr0 <= send_word + 2'd2;
                     end
                 end
 
                 ST_WWAIT: begin
                     if (cmd_ack) begin
-                        // readback needed for FIFO output OR for the self-test
-                        state <= (RD_OUT_EN || SELFTEST_EN) ? ST_RCMD : ST_NEXT;
+                        wr_consume_bank <= ~wr_consume_bank;
+                        pending_bursts  <= pending_bursts + 1'b1;
+                        if (write_addr >= FRAME_LAST_START)
+                            write_addr <= 21'd0;
+                        else
+                            write_addr <= write_addr + BURST_STEP;
+                        state <= ST_IDLE;
                     end
                 end
 
-                //------------------------------------------------------
-                // Read back the burst just written and stream it to the FIFO.
                 ST_RCMD: begin
                     user_cmd_en <= 1'b1;
                     user_cmd    <= CMD_READ;
-                    user_addr   <= wr_word_addr;
-                    rd_wptr     <= 8'd0;
+                    user_addr   <= op_addr;
+                    rd_cap_ptr  <= {BURST_AW{1'b0}};
                     state       <= ST_RCAP;
                 end
 
                 ST_RCAP: begin
-                    // circular capture; the i-th read word is stored at
-                    // (rd_wptr + i) & RD_MASK when capture ends (cmd_ack)
-                    rd_buf[rd_wptr & RD_MASK] <= read_data;
-                    rd_wptr <= rd_wptr + 1'b1;
+                    rd_cap_ptr <= rd_cap_ptr + 1'b1;
                     if (cmd_ack) begin
-                        rd_word_idx <= 8'd0;
-                        rd_half     <= 1'b0;
-                        state       <= ST_ROUT;
+                        if (rd_produce_bank)
+                            rd_start1 <= rd_cap_ptr + 1'b1;
+                        else
+                            rd_start0 <= rd_cap_ptr + 1'b1;
+                        rd_produce_bank <= ~rd_produce_bank;
+                        pending_bursts  <= pending_bursts - 1'b1;
+                        if (read_addr >= FRAME_LAST_START)
+                            read_addr <= 21'd0;
+                        else
+                            read_addr <= read_addr + BURST_STEP;
+                        state <= ST_IDLE;
                     end
-                end
-
-                ST_ROUT: begin
-                    if (SELFTEST_EN) begin
-                        // compare each read-back word against what was written
-                        if (rd_buf[(rd_wptr + rd_word_idx) & RD_MASK] !== burst_buf[rd_word_idx]) begin
-                            selftest_err_cnt <= selftest_err_cnt + 16'd1;
-                            selftest_err     <= 1'b1;
-                        end
-                        if (rd_word_idx == N1) begin
-                            rd_word_idx    <= 8'd0;
-                            selftest_done  <= 1'b1;   // 1-cycle pulse per checked burst
-                            state          <= ST_NEXT;
-                        end else begin
-                            rd_word_idx <= rd_word_idx + 1'b1;
-                        end
-                    end else if (rd_ready) begin
-                        // output 2N 16-bit pixels: low half then high half of each
-                        // 32-bit word, gated by the FIFO backpressure (rd_ready)
-                        if (!rd_half) begin
-                            rd_pix       <= rd_buf[(rd_wptr + rd_word_idx) & RD_MASK][15:0];
-                            rd_pix_valid <= 1'b1;
-                            rd_half      <= 1'b1;
-                        end else begin
-                            rd_pix       <= rd_buf[(rd_wptr + rd_word_idx) & RD_MASK][31:16];
-                            rd_pix_valid <= 1'b1;
-                            rd_half      <= 1'b0;
-                            if (rd_word_idx == N1) begin
-                                rd_word_idx <= 8'd0;
-                                state       <= ST_NEXT;
-                            end else begin
-                                rd_word_idx <= rd_word_idx + 1'b1;
-                            end
-                        end
-                    end
-                end
-
-                //------------------------------------------------------
-                // Advance to the next burst address.
-                ST_NEXT: begin
-                    if (wr_word_addr >= (SDRAM_HALF_WORDS - BURST_SIZE[20:0]))
-                        wr_word_addr <= 21'd0;
-                    else
-                        wr_word_addr <= wr_word_addr + BURST_SIZE[20:0];
-                    state <= ST_PACK;
                 end
 
                 default: state <= ST_IDLE;
             endcase
         end
     end
+
 endmodule

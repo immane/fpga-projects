@@ -49,29 +49,19 @@ localparam integer
 */
 
 
-// LED diagnostic:
-// - PLL unlocked: fast blink (input clock domain alive)
-// - PLL locked:   slow blink (HDMI domain active)
+// LED diagnostic. Tang Nano 20K LEDs are active-low.
 reg [25:0] led_cnt;
 always @(posedge clk) begin
     led_cnt <= led_cnt + 26'd1;
 end
 assign led[5] = (!lock) ? led_cnt[22] : led_cnt[24];
 
-// ---- SDRAM bring-up LEDs (board-level diagnostics) ----
-// led[1] = SDRAM init complete      (O_sdrc_init_done)
-// led[2] = SDRAM read-back mismatch (sticky, self-test error)
-// led[3] = SDRAM self-test loop running (slow blink while bursts are checked)
-// led[4] = system PLL locked (clk_sys alive)
-assign led[1] = sdrc_init_done;
-assign led[2] = selftest_err;
-assign led[4] = lock_sys;
-reg [25:0] st_cnt;
-always @(posedge clk_sys or negedge rst_n) begin
-    if (!rst_n) st_cnt <= 26'd0;
-    else if (selftest_done) st_cnt <= st_cnt + 26'd1;
-end
-assign led[3] = st_cnt[22];
+// led[1]: SDRAM initialized, led[2]: HDMI FIFO underflow (sticky),
+// led[3]: SDRAM stream prefilled, led[4]: system PLL locked.
+assign led[1] = ~sdrc_init_done;
+assign led[2] = ~fifo_underflow;
+assign led[3] = ~stream_ready;
+assign led[4] = ~lock_sys;
 
 // Frame counter for debugging
 reg [24:0] rst_cnt = 0;
@@ -90,18 +80,22 @@ wire clk_sys_90; // ~166.5MHz with 90-degree phase shift
 wire clk_cpu;    // ~83.25MHz
 wire clk_hdmi;
 wire clk_hdmi_5x;
-wire hdmi_rst_n;
+wire hdmi_clk_rst_n;
+wire video_rst_n;
 wire lock;
 wire lock_sys;
+wire stream_ready;
+wire sdrc_init_done;
+reg  fifo_underflow;
 
-assign hdmi_rst_n = rst_n && lock; // Hold HDMI domain in reset until PLL locks
+assign hdmi_clk_rst_n = rst_n && lock;
 
 timing #(
     .PLL_PROFILE(2'd3) // 1080p60
 ) u_timing (
     .clk(clk),
     .rst_n(rst_n),
-    .hdmi_rst_n(hdmi_rst_n),
+    .hdmi_rst_n(hdmi_clk_rst_n),
     .clk_sys(clk_sys),
     .clk_sys_90(clk_sys_90),
     .clk_cpu(clk_cpu),
@@ -110,6 +104,25 @@ timing #(
     .lock(lock),
     .lock_sys(lock_sys)
 );
+
+// Use the same PLL-qualified reset for the HS IP, its user scheduler, the
+// source-side pipeline, and the FIFO write domain.
+reg [1:0] sdrc_rst_sync;
+always @(posedge clk_sys or negedge rst_n) begin
+    if (!rst_n)         sdrc_rst_sync <= 2'b00;
+    else if (!lock_sys) sdrc_rst_sync <= 2'b00;
+    else                sdrc_rst_sync <= {sdrc_rst_sync[0], 1'b1};
+end
+wire sdrc_rst_n = sdrc_rst_sync[1];
+
+// Keep the pixel timing generator reset until SDRAM has prefilled the async
+// FIFO. CLKDIV itself is released as soon as the HDMI PLL locks.
+reg [1:0] video_rst_sync;
+always @(posedge clk_hdmi or negedge hdmi_clk_rst_n) begin
+    if (!hdmi_clk_rst_n) video_rst_sync <= 2'b00;
+    else                 video_rst_sync <= {video_rst_sync[0], stream_ready};
+end
+assign video_rst_n = video_rst_sync[1];
 
 
 // Pattern generator output goes through line buffer before TMDS encoding
@@ -123,9 +136,9 @@ pattern_gen #(
     .PATTERN_MODE(TEST_PATTERN_MODE)
 ) test_pattern (
     .clk(clk_sys),
-    .rst_n(rst_n),
-    .ready(!fifo_full), // Backpressure from line buffer FIFO
-    .frame_pulse(frame_pulse), // Pulse at the start of each frame for synchronization
+    .rst_n(sdrc_rst_n),
+    .ready(wr_ready),
+    .frame_pulse(1'b0),
     .x(x),
     .y(y),
     .rgb_o(rgb_ptrn_o), // Connect to TMDS encoder later
@@ -133,7 +146,9 @@ pattern_gen #(
 );
 
 
-// Vsync to reset pattern generator at the start of each frame 
+// Vsync crossing is retained for frame diagnostics. The source wraps after
+// exactly H_ACTIVE*V_ACTIVE accepted pixels and must not be reset while data
+// remains buffered in SDRAM.
 wire vsync_hdmi;
 reg [2:0] vsync_sys;
 always @(posedge clk_sys or negedge rst_n) begin
@@ -152,19 +167,24 @@ async_fifo #(
     .DATA_WIDTH(16)
 ) hdmi_line_buf_fifo (
     .w_clk(clk_sys),
-    .w_rst_n(rst_n),
-    .w_en(!fifo_full),
-    .w_data(rgb_ptrn_out_565),
+    .w_rst_n(sdrc_rst_n),
+    .w_en(rd_pix_valid && !fifo_full),
+    .w_data(rd_pix),
     .full(fifo_full),
     .almost_full(fifo_almost_full),
 
     .r_clk(clk_hdmi),
-    .r_rst_n(hdmi_rst_n),
-    .r_en(de_hdmi),
+    .r_rst_n(video_rst_n),
+    .r_en(de_hdmi && !fifo_empty),
     .r_data(rgb_from_buf_565),
     .empty(fifo_empty),
     .almost_empty(fifo_almost_empty)
 );
+
+always @(posedge clk_hdmi or negedge video_rst_n) begin
+    if (!video_rst_n) fifo_underflow <= 1'b0;
+    else if (de_hdmi && fifo_empty) fifo_underflow <= 1'b1;
+end
 
 
 // Dither RGB888 pattern output to RGB565 for HDMI line buffer
@@ -196,7 +216,7 @@ hdmi_top #(
 ) u_hdmi_top (
     .clk_hdmi(clk_hdmi),
     .clk_hdmi_5x(clk_hdmi_5x),
-    .rst_n(hdmi_rst_n),
+    .rst_n(video_rst_n),
     .rgb565_i(rgb_from_buf_565),
     .de_o(de_hdmi),
     .vsync_o(vsync_hdmi),
@@ -212,7 +232,6 @@ hdmi_top #(
 );
 
 // SDRAM controller inter-module wires (use sdrc_* naming to match IP signals)
-wire        sdrc_init_done;
 wire        sdrc_cmd_ack;
 wire [2:0]  sdrc_cmd;
 wire        sdrc_cmd_en;
@@ -220,26 +239,20 @@ wire [20:0] sdrc_addr;
 wire [31:0] sdrc_wdata;
 wire [7:0]  sdrc_data_len;
 wire [31:0] sdrc_rdata;
-wire [15:0] rd_pix;        // SDRAM read-back pixel -> line-buffer FIFO (unused in selftest)
-wire        rd_pix_valid;  // FIFO write strobe (clk_sys) (unused in selftest)
-wire        wr_ready;      // SDRAM write path can accept a pixel (unused in selftest)
-wire        selftest_done; // SDRAM self-test burst checked (loop running)
-wire        selftest_err;  // sticky: SDRAM read-back mismatch
-wire [15:0] selftest_err_cnt;
+wire [15:0] rd_pix;
+wire        rd_pix_valid;
+wire        wr_ready;
 
-// SDRAM user controller: board bring-up SELF-TEST. SELFTEST_EN=1 makes it
-// write KNOWN data (independent of the pattern) to SDRAM, read it back and
-// compare, reporting on led[1..3]. The HDMI display runs directly from the
-// pattern generator so SDRAM bring-up is isolated from display issues.
-// Once selftest_err stays 0 and init_done is high, SDRAM write/read works;
-// then switch RD_OUT_EN=1 / SELFTEST_EN=0 to route video through SDRAM.
+// 1920*1080 RGB565 pixels occupy 1,036,800 32-bit SDRAM words.
 sdram_user_ctrl #(
-    .BURST_SIZE(4),
-    .RD_OUT_EN(0),
-    .SELFTEST_EN(1)
+    .BURST_SIZE(64),
+    .CLK_FREQ_HZ(166_500_000),
+    .FRAME_WORDS(1_036_800),
+    .MAX_PENDING_BURSTS(64),
+    .PREFILL_PIXELS(2048)
 ) u_sdram_user_ctrl (
     .clk        (clk_sys),
-    .rst_n      (rst_n),
+    .rst_n      (sdrc_rst_n),
     .init_done  (sdrc_init_done),
     .cmd_ack    (sdrc_cmd_ack),
     .pix_valid  (ptrn_ve),
@@ -252,24 +265,10 @@ sdram_user_ctrl #(
     .read_data  (sdrc_rdata),
     .rd_pix     (rd_pix),
     .rd_pix_valid(rd_pix_valid),
-    .rd_ready   (1'b1),
+    .rd_ready   (!fifo_almost_full),
     .wr_ready   (wr_ready),
-    .selftest_done   (selftest_done),
-    .selftest_err    (selftest_err),
-    .selftest_err_cnt(selftest_err_cnt)
+    .stream_ready(stream_ready)
 );
-
-// SDRAM controller reset: hold in reset until the sys PLL is locked, then
-// release through a 2-flop synchronizer, so the controller never samples a
-// ramping/unstable clock during power-up init (a common cause of O_sdrc_init_done
-// never asserting).
-reg [1:0] sdrc_rst_sync;
-always @(posedge clk_sys or negedge rst_n) begin
-    if (!rst_n)         sdrc_rst_sync <= 2'b00;
-    else if (!lock_sys) sdrc_rst_sync <= 2'b00;
-    else                sdrc_rst_sync <= {sdrc_rst_sync[0], 1'b1};
-end
-wire sdrc_rst_n = sdrc_rst_sync[1];
 
 // SDRAM controller IP
 SDRAM_Controller_HS_Top u_sdram_ctrl (
@@ -301,4 +300,3 @@ SDRAM_Controller_HS_Top u_sdram_ctrl (
 );
 
 endmodule
-
