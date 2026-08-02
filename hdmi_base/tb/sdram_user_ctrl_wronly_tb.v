@@ -18,7 +18,7 @@ module sdram_user_ctrl_wronly_tb;
     wire        rdbk_err, rdbk_done;
 
     sdram_user_ctrl #(
-        .BURST_SIZE(32),
+        .BURST_SIZE(16),
         .VERIFY_EN (0)
     ) uut (
         .clk(clk), .rst_n(rst_n),

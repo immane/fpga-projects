@@ -210,8 +210,13 @@ wire [31:0] sdrc_rdata;
 wire        rdbk_err;   // SDRAM readback mismatch (sticky)
 wire        rdbk_done;  // SDRAM readback verify done
 
-// SDRAM user controller (write/read test sequencer)
-sdram_user_ctrl u_sdram_user_ctrl (
+// SDRAM user controller (burst write sequencer).
+// BURST_SIZE=16, VERIFY_EN=0 keep the clk_sys (166.5MHz) domain timing-clean.
+// Set VERIFY_EN=1 only for bring-up readback self-test (halves write BW).
+sdram_user_ctrl #(
+    .BURST_SIZE(4),
+    .VERIFY_EN (0)
+) u_sdram_user_ctrl (
     .clk        (clk_sys),
     .rst_n      (rst_n),
     .init_done  (sdrc_init_done),

@@ -28,9 +28,14 @@
 //              NOTE: this halves effective write bandwidth; set to 0 for
 //              continuous video-frame capture.
 //====================================================================
+// TIMING NOTE (Aug 2026): BURST_SIZE=32 with VERIFY_EN=1 blew up clk_sys
+// (166.5MHz) timing (TNS -622ns, 828 violated endpoints, Fmax ~105MHz) and
+// broke the HDMI pattern path. Keep BURST_SIZE small (16) and VERIFY_EN=0
+// for the main build; shift-register write output avoids the indexed-mux
+// fanout. Readback-verify is only synthesized when VERIFY_EN=1 (bring-up).
 module sdram_user_ctrl #(
-    parameter integer BURST_SIZE = 32,   // words per burst (power of 2, 1..256)
-    parameter integer VERIFY_EN  = 1     // 1: write + readback verify, 0: write only
+    parameter integer BURST_SIZE = 16,   // words per burst (power of 2, 1..256)
+    parameter integer VERIFY_EN  = 0     // 1: write + readback verify, 0: write only
 ) (
     input             clk,               // I_sdrc_clk (clk_sys)
     input             rst_n,
@@ -92,8 +97,9 @@ module sdram_user_ctrl #(
     reg        half_word;
     reg [15:0] pix_lo;
     reg [20:0] wr_word_addr;              // linear word address of current burst
-    reg [31:0] burst_buf [0:BURST_SIZE-1]; // written data
-    reg [31:0] rd_buf    [0:BURST_SIZE-1]; // readback capture (circular)
+    reg [31:0] burst_buf [0:BURST_SIZE-1]; // written data (storage for VERIFY)
+    reg [31:0] wr_shift [0:BURST_SIZE-1];  // shift register driving user_data out
+    reg [31:0] rd_buf    [0:BURST_SIZE-1]; // readback capture (circular, VERIFY only)
     reg [7:0]  rd_wptr;
     reg [7:0]  rd_idx;
     reg        row_open;
@@ -101,6 +107,7 @@ module sdram_user_ctrl #(
     reg [1:0]  cur_bank;
     reg [23:0] ref_cnt;
     reg        ref_pending;
+    integer    i;
 
     // target bank/row/col for the current burst address
     wire [1:0]  tgt_bank = wr_word_addr[20:19];
@@ -120,6 +127,9 @@ module sdram_user_ctrl #(
             half_word    <= 1'b0;
             pix_lo       <= 16'd0;
             wr_word_addr <= 21'd0;
+            for (i = 0; i < BURST_SIZE; i = i + 1) begin
+                wr_shift[i] <= 32'd0;
+            end
             rd_wptr      <= 8'd0;
             rd_idx       <= 8'd0;
             row_open     <= 1'b0;
@@ -223,18 +233,24 @@ module sdram_user_ctrl #(
                 end
 
                 //------------------------------------------------------
-                // Write burst: word 0 with the command, then stream.
+                // Write burst: word 0 with the command, then stream words
+                // 1..N-1 from the shift register (no indexed-mux fanout).
                 ST_WCMD: begin
                     user_cmd_en <= 1'b1;
                     user_cmd    <= CMD_WRITE;
                     user_addr   <= wr_word_addr;
-                    user_data   <= burst_buf[0];
+                    user_data   <= burst_buf[0];   // word 0 together with command
                     send_cnt    <= 8'd1;
+                    // pre-load shift register with words 1..N-1
+                    for (i = 0; i < BURST_SIZE-1; i = i + 1)
+                        wr_shift[i] <= burst_buf[i+1];
                     state       <= ST_WDAT;
                 end
 
                 ST_WDAT: begin
-                    user_data <= burst_buf[send_cnt];
+                    user_data <= wr_shift[0];      // stream words 1..N-1
+                    for (i = 0; i < BURST_SIZE-1; i = i + 1)
+                        wr_shift[i] <= wr_shift[i+1];
                     if (send_cnt == N1) begin
                         send_cnt <= 8'd0;
                         state    <= ST_WWAIT;

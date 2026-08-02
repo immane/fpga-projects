@@ -21,9 +21,9 @@ module sdram_user_ctrl_tb;
     wire        rdbk_err;
     wire        rdbk_done;
 
-    // UUT: bigger burst (32 words) + readback verify
+    // UUT: burst write + readback verify
     sdram_user_ctrl #(
-        .BURST_SIZE(32),
+        .BURST_SIZE(16),
         .VERIFY_EN (1)
     ) uut (
         .clk       (clk),
